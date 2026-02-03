@@ -1,113 +1,134 @@
 const express = require('express');
 const router = express.Router();
-const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { pool } = require('../config/database');
 const { authenticateToken } = require('../middleware/auth');
 
-// Register new user
-router.post('/register', async (req, res) => {
+// Store OTPs in memory (in production, use Redis)
+const otpStore = new Map();
+
+// Generate 6-digit OTP
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+// Send OTP (POST /api/users/send-otp)
+router.post('/send-otp', async (req, res) => {
   try {
-    const { email, password, full_name, phone } = req.body;
+    const { phone } = req.body;
 
-    if (!email || !password || !full_name) {
-      return res.status(400).json({ error: 'Email, password, and full name are required' });
+    if (!phone || phone.length < 10) {
+      return res.status(400).json({ error: 'Valid phone number is required' });
     }
 
-    const userCheck = await pool.query(
-      'SELECT * FROM users WHERE email = $1',
-      [email]
-    );
+    // Generate OTP
+    const otp = generateOTP();
+    
+    // Store OTP with 5-minute expiry
+    otpStore.set(phone, {
+      otp: otp,
+      expiresAt: Date.now() + 5 * 60 * 1000 // 5 minutes
+    });
 
-    if (userCheck.rows.length > 0) {
-      return res.status(400).json({ error: 'User already exists' });
-    }
+    // In production, send OTP via SMS (Twilio, AWS SNS, etc.)
+    console.log(`📱 OTP for ${phone}: ${otp}`);
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const result = await pool.query(
-      'INSERT INTO users (email, password, full_name, phone) VALUES ($1, $2, $3, $4) RETURNING id, email, full_name, phone, created_at',
-      [email, hashedPassword, full_name, phone]
-    );
-
-    const user = result.rows[0];
-
-    const token = jwt.sign(
-      { userId: user.id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: '30d' }
-    );
-
-    res.status(201).json({
-      message: 'User registered successfully',
-      token,
-      user: {
-        id: user.id,
-        email: user.email,
-        full_name: user.full_name,
-        phone: user.phone,
-        created_at: user.created_at
-      }
+    res.json({
+      message: 'OTP sent successfully',
+      // REMOVE THIS IN PRODUCTION - only for testing
+      otp: otp,
+      expiresIn: 300 // seconds
     });
   } catch (error) {
-    console.error('Registration error:', error);
-    res.status(500).json({ error: 'Registration failed' });
+    console.error('Send OTP error:', error);
+    res.status(500).json({ error: 'Failed to send OTP' });
   }
 });
 
-// Login user
-router.post('/login', async (req, res) => {
+// Verify OTP and Login/Register (POST /api/users/verify-otp)
+router.post('/verify-otp', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { phone, otp, full_name } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required' });
+    if (!phone || !otp) {
+      return res.status(400).json({ error: 'Phone and OTP are required' });
     }
 
-    const result = await pool.query(
-      'SELECT * FROM users WHERE email = $1',
-      [email]
+    // Check if OTP exists and is valid
+    const storedOTP = otpStore.get(phone);
+    
+    if (!storedOTP) {
+      return res.status(400).json({ error: 'No OTP found. Please request a new one.' });
+    }
+
+    if (Date.now() > storedOTP.expiresAt) {
+      otpStore.delete(phone);
+      return res.status(400).json({ error: 'OTP expired. Please request a new one.' });
+    }
+
+    if (storedOTP.otp !== otp) {
+      return res.status(400).json({ error: 'Invalid OTP' });
+    }
+
+    // OTP is valid, delete it
+    otpStore.delete(phone);
+
+    // Check if user exists
+    let result = await pool.query(
+      'SELECT * FROM users WHERE phone = $1',
+      [phone]
     );
 
+    let user;
+    let isNewUser = false;
+
     if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      // New user - register
+      if (!full_name) {
+        return res.status(400).json({ error: 'Full name is required for new users' });
+      }
+
+      result = await pool.query(
+        'INSERT INTO users (phone, full_name) VALUES ($1, $2) RETURNING id, phone, full_name, created_at',
+        [phone, full_name]
+      );
+      
+      user = result.rows[0];
+      isNewUser = true;
+    } else {
+      // Existing user - login
+      user = result.rows[0];
     }
 
-    const user = result.rows[0];
-
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
+    // Generate JWT token
     const token = jwt.sign(
-      { userId: user.id, email: user.email },
-      process.env.JWT_SECRET,
+      { userId: user.id, phone: user.phone },
+      process.env.JWT_SECRET || 'watercan-secret-key-change-in-production',
       { expiresIn: '30d' }
     );
 
     res.json({
-      message: 'Login successful',
+      message: isNewUser ? 'Registration successful' : 'Login successful',
       token,
       user: {
         id: user.id,
-        email: user.email,
-        full_name: user.full_name,
         phone: user.phone,
+        full_name: user.full_name,
         created_at: user.created_at
-      }
+      },
+      isNewUser
     });
   } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ error: 'Login failed' });
+    console.error('Verify OTP error:', error);
+    res.status(500).json({ error: 'Failed to verify OTP' });
   }
 });
 
-// Get user profile
+// Get user profile (GET /api/users/profile)
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, email, full_name, phone, created_at FROM users WHERE id = $1',
+      'SELECT id, phone, full_name, created_at FROM users WHERE id = $1',
       [req.user.userId]
     );
 
@@ -122,14 +143,18 @@ router.get('/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Update user profile
+// Update user profile (PUT /api/users/profile)
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
-    const { full_name, phone } = req.body;
+    const { full_name } = req.body;
+
+    if (!full_name) {
+      return res.status(400).json({ error: 'Full name is required' });
+    }
 
     const result = await pool.query(
-      'UPDATE users SET full_name = $1, phone = $2 WHERE id = $3 RETURNING id, email, full_name, phone, created_at',
-      [full_name, phone, req.user.userId]
+      'UPDATE users SET full_name = $1 WHERE id = $2 RETURNING id, phone, full_name, created_at',
+      [full_name, req.user.userId]
     );
 
     if (result.rows.length === 0) {
