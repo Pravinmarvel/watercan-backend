@@ -14,7 +14,7 @@ app.use(express.json());
 const usersRouter = require('./routes/users');
 app.use('/api/users', usersRouter);
 
-// Health check endpoint
+// Health check
 app.get('/health', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
@@ -37,21 +37,13 @@ app.get('/', (req, res) => {
   res.json({
     message: 'WaterCan API Server',
     version: '1.0.0',
-    endpoints: {
-      health: '/health',
-      users: {
-        sendOTP: 'POST /api/users/send-otp',
-        verifyOTP: 'POST /api/users/verify-otp',
-        profile: 'GET /api/users/profile',
-        updateProfile: 'PUT /api/users/profile'
-      }
-    }
+    status: 'running'
   });
 });
 
-// Error handling middleware
+// Error handling
 app.use((err, req, res, next) => {
-  console.error('❌ Server error:', err);
+  console.error('Server error:', err);
   res.status(500).json({
     error: 'Internal server error',
     message: err.message
