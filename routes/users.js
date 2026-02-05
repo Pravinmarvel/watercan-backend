@@ -220,9 +220,10 @@ router.get('/addresses', authenticateToken, async (req, res) => {
 // POST /api/users/addresses
 router.post('/addresses', authenticateToken, async (req, res) => {
   try {
-    const { addressLine, latitude, longitude } = req.body;
+    // ✅ FIXED: Changed from addressLine to address_line
+    const { address_line, latitude, longitude } = req.body;
     
-    if (!addressLine || addressLine.trim() === '') {
+    if (!address_line || address_line.trim() === '') {
       return res.status(400).json({ error: 'Address line is required' });
     }
 
@@ -233,7 +234,7 @@ router.post('/addresses', authenticateToken, async (req, res) => {
     `;
     const result = await pool.query(query, [
       req.user.userId,
-      addressLine.trim(),
+      address_line.trim(),
       latitude || null,
       longitude || null
     ]);
@@ -255,9 +256,10 @@ router.post('/addresses', authenticateToken, async (req, res) => {
 router.put('/addresses/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { addressLine, latitude, longitude } = req.body;
+    // ✅ FIXED: Changed from addressLine to address_line
+    const { address_line, latitude, longitude } = req.body;
     
-    if (!addressLine || addressLine.trim() === '') {
+    if (!address_line || address_line.trim() === '') {
       return res.status(400).json({ error: 'Address line is required' });
     }
 
@@ -268,7 +270,7 @@ router.put('/addresses/:id', authenticateToken, async (req, res) => {
       RETURNING *
     `;
     const result = await pool.query(query, [
-      addressLine.trim(),
+      address_line.trim(),
       latitude || null,
       longitude || null,
       id,
@@ -298,9 +300,9 @@ router.put('/addresses/:id', authenticateToken, async (req, res) => {
 router.get('/orders', authenticateToken, async (req, res) => {
   try {
     const query = `
-      SELECT o.*, a.address_line 
-      FROM orders o
-      LEFT JOIN addresses a ON o.address_id = a.id
+      SELECT o.*, a.address_line, a.latitude, a.longitude 
+      FROM orders o 
+      LEFT JOIN addresses a ON o.address_id = a.id 
       WHERE o.user_id = $1 
       ORDER BY o.created_at DESC
     `;
@@ -316,9 +318,9 @@ router.get('/orders', authenticateToken, async (req, res) => {
 // POST /api/users/orders
 router.post('/orders', authenticateToken, async (req, res) => {
   try {
-    const { addressId, quantity, totalAmount, status } = req.body;
+    const { address_id, quantity, total_amount, status } = req.body;
     
-    if (!addressId || !quantity || !totalAmount) {
+    if (!address_id || !quantity || !total_amount) {
       return res.status(400).json({ error: 'Address ID, quantity, and total amount are required' });
     }
 
@@ -329,9 +331,9 @@ router.post('/orders', authenticateToken, async (req, res) => {
     `;
     const result = await pool.query(query, [
       req.user.userId,
-      addressId,
+      address_id,
       quantity,
-      totalAmount,
+      total_amount,
       status || 'pending'
     ]);
 
@@ -360,7 +362,7 @@ router.get('/payments', authenticateToken, async (req, res) => {
       FROM payments p
       LEFT JOIN orders o ON p.order_id = o.id
       WHERE o.user_id = $1 
-      ORDER BY p.created_at DESC
+      ORDER BY p.paid_at DESC
     `;
     const result = await pool.query(query, [req.user.userId]);
 
@@ -374,10 +376,21 @@ router.get('/payments', authenticateToken, async (req, res) => {
 // POST /api/users/payments
 router.post('/payments', authenticateToken, async (req, res) => {
   try {
-    const { orderId, method, amount, status } = req.body;
+    // ✅ FIXED: Changed from orderId to order_id
+    const { order_id, method, amount, status } = req.body;
     
-    if (!orderId || !method || !amount) {
+    if (!order_id || !method || !amount) {
       return res.status(400).json({ error: 'Order ID, method, and amount are required' });
+    }
+
+    // Verify order belongs to user
+    const orderCheck = await pool.query(
+      'SELECT * FROM orders WHERE id = $1 AND user_id = $2',
+      [order_id, req.user.userId]
+    );
+
+    if (orderCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Order not found' });
     }
 
     const query = `
@@ -386,13 +399,19 @@ router.post('/payments', authenticateToken, async (req, res) => {
       RETURNING *
     `;
     const result = await pool.query(query, [
-      orderId,
+      order_id,
       method,
       amount,
       status || 'success'
     ]);
 
-    console.log(`✅ Payment created for order ${orderId}`);
+    // ✅ Update order status to completed
+    await pool.query(
+      'UPDATE orders SET status = $1 WHERE id = $2',
+      ['completed', order_id]
+    );
+
+    console.log(`✅ Payment created for order ${order_id}`);
 
     res.status(201).json({
       message: 'Payment created successfully',
@@ -442,7 +461,8 @@ router.get('/subscriptions/active', authenticateToken, async (req, res) => {
 // POST /api/users/subscriptions
 router.post('/subscriptions', authenticateToken, async (req, res) => {
   try {
-    const { isActive, startedAt, endedAt } = req.body;
+    // ✅ FIXED: Changed from isActive/startedAt/endedAt to is_active/started_at/ended_at
+    const { is_active, started_at, ended_at } = req.body;
     
     const query = `
       INSERT INTO subscriptions (user_id, is_active, started_at, ended_at) 
@@ -451,9 +471,9 @@ router.post('/subscriptions', authenticateToken, async (req, res) => {
     `;
     const result = await pool.query(query, [
       req.user.userId,
-      isActive !== undefined ? isActive : true,
-      startedAt || new Date().toISOString(),
-      endedAt || null
+      is_active !== undefined ? is_active : true,
+      started_at || new Date().toISOString(),
+      ended_at || null
     ]);
 
     console.log(`✅ Subscription created for user ${req.user.userId}`);
@@ -473,6 +493,12 @@ router.post('/subscriptions', authenticateToken, async (req, res) => {
 router.post('/subscriptions/:id/activate', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // Deactivate all other subscriptions first
+    await pool.query(
+      'UPDATE subscriptions SET is_active = false WHERE user_id = $1',
+      [req.user.userId]
+    );
     
     const query = `
       UPDATE subscriptions 
@@ -564,7 +590,8 @@ router.get('/can-status', authenticateToken, async (req, res) => {
 // PUT /api/users/can-status
 router.put('/can-status', authenticateToken, async (req, res) => {
   try {
-    const { can1Full, can2Full, can3Full } = req.body;
+    // ✅ FIXED: Changed from can1Full/can2Full/can3Full to can_1_full/can_2_full/can_3_full
+    const { can_1_full, can_2_full, can_3_full } = req.body;
     
     // Check if can status exists
     const checkQuery = 'SELECT * FROM can_status WHERE user_id = $1';
@@ -580,22 +607,22 @@ router.put('/can-status', authenticateToken, async (req, res) => {
       `;
       result = await pool.query(insertQuery, [
         req.user.userId,
-        can1Full !== undefined ? can1Full : true,
-        can2Full !== undefined ? can2Full : true,
-        can3Full !== undefined ? can3Full : true
+        can_1_full !== undefined ? can_1_full : true,
+        can_2_full !== undefined ? can_2_full : true,
+        can_3_full !== undefined ? can_3_full : true
       ]);
     } else {
       // Update existing can status
       const updateQuery = `
         UPDATE can_status 
-        SET can_1_full = $1, can_2_full = $2, can_3_full = $3 
+        SET can_1_full = $1, can_2_full = $2, can_3_full = $3, updated_at = CURRENT_TIMESTAMP
         WHERE user_id = $4 
         RETURNING *
       `;
       result = await pool.query(updateQuery, [
-        can1Full !== undefined ? can1Full : checkResult.rows[0].can_1_full,
-        can2Full !== undefined ? can2Full : checkResult.rows[0].can_2_full,
-        can3Full !== undefined ? can3Full : checkResult.rows[0].can_3_full,
+        can_1_full !== undefined ? can_1_full : checkResult.rows[0].can_1_full,
+        can_2_full !== undefined ? can_2_full : checkResult.rows[0].can_2_full,
+        can_3_full !== undefined ? can_3_full : checkResult.rows[0].can_3_full,
         req.user.userId
       ]);
     }
