@@ -220,7 +220,6 @@ router.get('/addresses', authenticateToken, async (req, res) => {
 // POST /api/users/addresses
 router.post('/addresses', authenticateToken, async (req, res) => {
   try {
-    // ✅ FIXED: Changed from addressLine to address_line
     const { address_line, latitude, longitude } = req.body;
     
     if (!address_line || address_line.trim() === '') {
@@ -256,7 +255,6 @@ router.post('/addresses', authenticateToken, async (req, res) => {
 router.put('/addresses/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    // ✅ FIXED: Changed from addressLine to address_line
     const { address_line, latitude, longitude } = req.body;
     
     if (!address_line || address_line.trim() === '') {
@@ -376,7 +374,6 @@ router.get('/payments', authenticateToken, async (req, res) => {
 // POST /api/users/payments
 router.post('/payments', authenticateToken, async (req, res) => {
   try {
-    // ✅ FIXED: Changed from orderId to order_id
     const { order_id, method, amount, status } = req.body;
     
     if (!order_id || !method || !amount) {
@@ -405,7 +402,7 @@ router.post('/payments', authenticateToken, async (req, res) => {
       status || 'success'
     ]);
 
-    // ✅ Update order status to completed
+    // Update order status to completed
     await pool.query(
       'UPDATE orders SET status = $1 WHERE id = $2',
       ['completed', order_id]
@@ -431,7 +428,7 @@ router.post('/payments', authenticateToken, async (req, res) => {
 // GET /api/users/subscriptions
 router.get('/subscriptions', authenticateToken, async (req, res) => {
   try {
-    const query = 'SELECT * FROM subscriptions WHERE user_id = $1 ORDER BY created_at DESC';
+    const query = 'SELECT * FROM subscriptions WHERE user_id = $1 ORDER BY started_at DESC';
     const result = await pool.query(query, [req.user.userId]);
 
     res.json({ subscriptions: result.rows });
@@ -461,7 +458,6 @@ router.get('/subscriptions/active', authenticateToken, async (req, res) => {
 // POST /api/users/subscriptions
 router.post('/subscriptions', authenticateToken, async (req, res) => {
   try {
-    // ✅ FIXED: Changed from isActive/startedAt/endedAt to is_active/started_at/ended_at
     const { is_active, started_at, ended_at } = req.body;
     
     const query = `
@@ -590,7 +586,6 @@ router.get('/can-status', authenticateToken, async (req, res) => {
 // PUT /api/users/can-status
 router.put('/can-status', authenticateToken, async (req, res) => {
   try {
-    // ✅ FIXED: Changed from can1Full/can2Full/can3Full to can_1_full/can_2_full/can_3_full
     const { can_1_full, can_2_full, can_3_full } = req.body;
     
     // Check if can status exists
@@ -637,6 +632,122 @@ router.put('/can-status', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('❌ Update can status error:', error);
     res.status(500).json({ error: 'Failed to update can status' });
+  }
+});
+
+// ======================================
+// APARTMENT ROUTES
+// ======================================
+
+// GET all apartments (PUBLIC - no auth required)
+router.get('/apartments', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT id, name, location, price_per_can, created_at
+      FROM apartment_groups
+      ORDER BY name ASC
+    `);
+
+    res.json({
+      success: true,
+      apartments: result.rows
+    });
+  } catch (error) {
+    console.error('❌ Get apartments error:', error);
+    res.status(500).json({ error: 'Failed to get apartments' });
+  }
+});
+
+// GET apartments with search (PUBLIC - no auth required)
+router.get('/apartments/search', async (req, res) => {
+  const { query } = req.query;
+
+  try {
+    const result = await pool.query(`
+      SELECT id, name, location, price_per_can, created_at
+      FROM apartment_groups
+      WHERE 
+        LOWER(name) LIKE $1 OR 
+        LOWER(location) LIKE $1
+      ORDER BY name ASC
+    `, [`%${query.toLowerCase()}%`]);
+
+    res.json({
+      success: true,
+      apartments: result.rows
+    });
+  } catch (error) {
+    console.error('❌ Search apartments error:', error);
+    res.status(500).json({ error: 'Failed to search apartments' });
+  }
+});
+
+// UPDATE user's apartment (REQUIRES AUTH)
+router.put('/:userId/apartment', authenticateToken, async (req, res) => {
+  const { userId } = req.params;
+  const { apartment_id } = req.body;
+
+  // Verify user owns this account
+  if (req.user.userId !== parseInt(userId)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const result = await pool.query(`
+      UPDATE users
+      SET apartment_id = $1
+      WHERE id = $2
+      RETURNING id, phone, full_name, apartment_id
+    `, [apartment_id, userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      success: true,
+      message: 'Apartment updated successfully',
+      user: result.rows[0]
+    });
+  } catch (error) {
+    console.error('❌ Update apartment error:', error);
+    res.status(500).json({ error: 'Failed to update apartment' });
+  }
+});
+
+// GET user's apartment details (REQUIRES AUTH)
+router.get('/:userId/apartment', authenticateToken, async (req, res) => {
+  const { userId } = req.params;
+
+  // Verify user owns this account
+  if (req.user.userId !== parseInt(userId)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const result = await pool.query(`
+      SELECT 
+        u.id,
+        u.apartment_id,
+        ag.name as apartment_name,
+        ag.location,
+        ag.price_per_can
+      FROM users u
+      LEFT JOIN apartment_groups ag ON u.apartment_id = ag.id
+      WHERE u.id = $1
+    `, [userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      success: true,
+      apartment: result.rows[0]
+    });
+  } catch (error) {
+    console.error('❌ Get user apartment error:', error);
+    res.status(500).json({ error: 'Failed to get apartment details' });
   }
 });
 
