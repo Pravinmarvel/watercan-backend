@@ -60,7 +60,7 @@ router.post('/send-otp', async (req, res) => {
 
     console.log(`📱 OTP generated for distributor ${phone}: ${otp}`);
 
-    res.json({ message: 'OTP sent successfully', otp: otp }); // Remove otp in production
+    res.json({ message: 'OTP sent successfully', otp: otp });
 
   } catch (error) {
     console.error('❌ Send OTP error:', error);
