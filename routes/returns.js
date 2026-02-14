@@ -1,8 +1,3 @@
-// =====================================================
-// BACKEND ROUTE: routes/returns.js
-// Add this to your backend
-// =====================================================
-
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
@@ -26,10 +21,8 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// =====================================================
 // CREATE RETURN REQUEST
-// =====================================================
-router.post('/:userId/returns', authenticateToken, async (req, res) => {
+router.post('/users/:userId/returns', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
     const {
@@ -92,10 +85,8 @@ router.post('/:userId/returns', authenticateToken, async (req, res) => {
   }
 });
 
-// =====================================================
 // GET USER'S RETURN REQUESTS
-// =====================================================
-router.get('/:userId/returns', authenticateToken, async (req, res) => {
+router.get('/users/:userId/returns', authenticateToken, async (req, res) => {
   try {
     const { userId } = req.params;
 
@@ -129,10 +120,8 @@ router.get('/:userId/returns', authenticateToken, async (req, res) => {
   }
 });
 
-// =====================================================
 // UPDATE RETURN REQUEST STATUS
-// =====================================================
-router.put('/:userId/returns/:returnId', authenticateToken, async (req, res) => {
+router.put('/users/:userId/returns/:returnId', authenticateToken, async (req, res) => {
   try {
     const { userId, returnId } = req.params;
     const { status } = req.body;
@@ -177,47 +166,6 @@ router.put('/:userId/returns/:returnId', authenticateToken, async (req, res) => 
     console.error('❌ Error updating return request:', error);
     res.status(500).json({
       error: 'Failed to update return request',
-      details: error.message
-    });
-  }
-});
-
-// =====================================================
-// DELETE RETURN REQUEST
-// =====================================================
-router.delete('/:userId/returns/:returnId', authenticateToken, async (req, res) => {
-  try {
-    const { userId, returnId } = req.params;
-
-    console.log(`📦 Deleting return request ${returnId}`);
-
-    // Validate user
-    if (req.user.userId !== parseInt(userId)) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
-
-    const query = `
-      DELETE FROM can_returns
-      WHERE id = $1 AND user_id = $2
-      RETURNING *
-    `;
-
-    const result = await pool.query(query, [returnId, userId]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Return request not found' });
-    }
-
-    console.log('✅ Return request deleted');
-
-    res.json({
-      message: 'Return request deleted successfully'
-    });
-
-  } catch (error) {
-    console.error('❌ Error deleting return request:', error);
-    res.status(500).json({
-      error: 'Failed to delete return request',
       details: error.message
     });
   }
