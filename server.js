@@ -1,70 +1,117 @@
+// =====================================================
+// WATERCAN BACKEND - COMPLETE SERVER
+// =====================================================
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { pool } = require('./db');
+const { initializeDatabase } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// =====================================================
+// MIDDLEWARE
+// =====================================================
+
+app.use(cors({
+  origin: '*', // In production, specify your frontend domain
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Import routers
-const usersRouter = require('./routes/users');
-const distributorsRouter = require('./routes/distributors');
-const returnsRouter = require('./routes/returns');
+// Request logging
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
 
-// ✅ FIXED: Mount routers correctly
-app.use('/api/users', usersRouter);
-app.use('/api/distributors', distributorsRouter);
-app.use('/api', returnsRouter); // ← Changed from '/api/users' to '/api'
+// =====================================================
+// ROUTES
+// =====================================================
 
 // Health check
-app.get('/health', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT NOW()');
-    res.json({
-      status: 'healthy',
-      database: 'connected',
-      timestamp: result.rows[0].now
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'unhealthy',
-      database: 'disconnected',
-      error: error.message
-    });
-  }
-});
-
-// Root endpoint
 app.get('/', (req, res) => {
   res.json({
-    message: 'WaterCan API Server',
-    version: '1.0.0',
+    message: 'WaterCan Backend API',
     status: 'running',
-    endpoints: {
-      users: '/api/users',
-      distributors: '/api/distributors',
-      returns: '/api/users/:userId/returns',
-      health: '/health'
-    }
+    version: '2.0.0',
+    timestamp: new Date().toISOString()
   });
 });
 
-// Error handler
+// Import route modules
+const userRoutes = require('./routes/users');
+const distributorRoutes = require('./routes/distributors');
+const returnRoutes = require('./routes/returns');
+
+// Mount routes
+app.use('/api/users', userRoutes);
+app.use('/api/distributors', distributorRoutes);
+app.use('/api/returns', returnRoutes);
+
+// =====================================================
+// ERROR HANDLING
+// =====================================================
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Route not found',
+    path: req.path 
+  });
+});
+
+// Global error handler
 app.use((err, req, res, next) => {
-  console.error('❌ Server error:', err);
-  res.status(500).json({
-    error: 'Internal server error',
-    message: err.message
+  console.error('❌ Error:', err);
+  res.status(err.status || 500).json({
+    error: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`👥 Users API: /api/users`);
-  console.log(`🚚 Distributors API: /api/distributors`);
-  console.log(`📦 Returns API: /api/users/:userId/returns`);
+// =====================================================
+// DATABASE INITIALIZATION & SERVER START
+// =====================================================
+
+async function startServer() {
+  try {
+    console.log('🔄 Initializing database...');
+    await initializeDatabase();
+    console.log('✅ Database initialized');
+
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`📍 Health check: http://localhost:${PORT}/`);
+      console.log(`📍 API base: http://localhost:${PORT}/api`);
+      console.log(`\n📋 Available endpoints:`);
+      console.log(`   Users: /api/users/*`);
+      console.log(`   Distributors: /api/distributors/*`);
+      console.log(`   Returns: /api/returns/*`);
+      console.log(`\n⚙️  Environment: ${process.env.NODE_ENV || 'development'}`);
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// Handle graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('👋 SIGTERM received. Shutting down gracefully...');
+  process.exit(0);
 });
+
+process.on('SIGINT', () => {
+  console.log('👋 SIGINT received. Shutting down gracefully...');
+  process.exit(0);
+});
+
+// Start the server
+startServer();
+
+module.exports = app;

@@ -69,9 +69,10 @@ function authenticateToken(req, res, next) {
 
   // USE ENVIRONMENT VARIABLE - NEVER hardcode!
   const secret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
-  
+
   jwt.verify(token, secret, (err, distributor) => {
     if (err) {
+      console.error('JWT verify error:', err);
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
     req.distributor = distributor;
@@ -202,8 +203,8 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
 
       // Insert new distributor with default values
       const insertQuery = 
-        'INSERT INTO distributors (phone, full_name, is_working) VALUES ($1, $2, $3) RETURNING *';
-      const insertResult = await pool.query(insertQuery, [phone, sanitizedName, true]);
+        'INSERT INTO distributors (phone, full_name, is_working) VALUES ($1, $2, true) RETURNING *';
+      const insertResult = await pool.query(insertQuery, [phone, sanitizedName]);
       distributor = insertResult.rows[0];
       isNewDistributor = true;
       
@@ -235,8 +236,8 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
         id: distributor.id,
         phone: distributor.phone,
         fullName: distributor.full_name,
-        upiId: distributor.upi_id,
-        isWorking: distributor.is_working
+        upiId: distributor.upi_id || null,
+        isWorking: distributor.is_working !== false // Default to true
       }
     });
 
@@ -266,8 +267,8 @@ router.get('/profile', authenticateToken, async (req, res) => {
         id: result.rows[0].id,
         phone: result.rows[0].phone,
         fullName: result.rows[0].full_name,
-        upiId: result.rows[0].upi_id,
-        isWorking: result.rows[0].is_working,
+        upiId: result.rows[0].upi_id || null,
+        isWorking: result.rows[0].is_working !== false,
         createdAt: result.rows[0].created_at
       }
     });
@@ -279,65 +280,109 @@ router.get('/profile', authenticateToken, async (req, res) => {
 });
 
 // =====================================================
-// 7. UPDATE PROFILE - PROTECTED ROUTE
+// 7. UPDATE PROFILE - PROTECTED ROUTE (FIXED)
 // =====================================================
 
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
+    console.log('📝 Update profile request:', req.body);
+    
     const { fullName, upi_id, is_working } = req.body;
 
-    // Build dynamic update query
+    // Build dynamic update query based on provided fields
     const updates = [];
     const values = [];
     let paramCount = 1;
 
-    if (fullName !== undefined) {
-      const sanitizedName = fullName.trim().substring(0, 255);
+    if (fullName !== undefined && fullName !== null) {
+      if (fullName.trim() === '') {
+        return res.status(400).json({ error: 'Full name cannot be empty' });
+      }
       updates.push(`full_name = $${paramCount}`);
-      values.push(sanitizedName);
+      values.push(fullName.trim().substring(0, 255));
       paramCount++;
+      console.log('✅ Adding fullName update');
     }
 
     if (upi_id !== undefined) {
-      // Validate UPI ID format if provided
-      if (upi_id !== null && upi_id.trim() !== '') {
-        const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
-        if (!upiRegex.test(upi_id.trim())) {
-          return res.status(400).json({ 
-            error: 'Invalid UPI ID format. Format: username@bank' 
-          });
+      console.log('📱 UPI ID update requested:', upi_id);
+      
+      // Validate UPI ID format if provided and not null
+      if (upi_id !== null && upi_id !== '' && typeof upi_id === 'string') {
+        const trimmedUpi = upi_id.trim();
+        
+        if (trimmedUpi !== '') {
+          const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
+          if (!upiRegex.test(trimmedUpi)) {
+            console.log('❌ Invalid UPI format:', trimmedUpi);
+            return res.status(400).json({ 
+              error: 'Invalid UPI ID format. Example: 9876543210@paytm' 
+            });
+          }
+          updates.push(`upi_id = $${paramCount}`);
+          values.push(trimmedUpi.substring(0, 100));
+          paramCount++;
+          console.log('✅ Adding UPI ID update:', trimmedUpi);
+        } else {
+          // Empty string means remove UPI
+          updates.push(`upi_id = $${paramCount}`);
+          values.push(null);
+          paramCount++;
+          console.log('✅ Removing UPI ID (empty string)');
         }
-        updates.push(`upi_id = $${paramCount}`);
-        values.push(upi_id.trim());
       } else {
+        // null means remove UPI
         updates.push(`upi_id = $${paramCount}`);
         values.push(null);
+        paramCount++;
+        console.log('✅ Removing UPI ID (null)');
       }
-      paramCount++;
     }
 
-    if (is_working !== undefined) {
+    if (is_working !== undefined && is_working !== null) {
+      console.log('⚙️ is_working update requested:', is_working, typeof is_working);
+      
+      // Validate boolean
+      if (typeof is_working !== 'boolean') {
+        console.log('❌ is_working is not boolean:', typeof is_working);
+        return res.status(400).json({ 
+          error: 'is_working must be true or false' 
+        });
+      }
       updates.push(`is_working = $${paramCount}`);
       values.push(is_working);
       paramCount++;
+      console.log('✅ Adding is_working update');
     }
 
     if (updates.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
+      console.log('⚠️ No fields to update');
+      return res.status(400).json({ 
+        error: 'No valid fields to update' 
+      });
     }
 
-    // Add distributor ID to values
+    // Add distributor ID as last parameter
     values.push(req.distributor.distributorId);
 
-    // Construct and execute query
+    // Build and execute query
     const query = `
       UPDATE distributors 
       SET ${updates.join(', ')} 
       WHERE id = $${paramCount} 
-      RETURNING id, phone, full_name, upi_id, is_working
+      RETURNING id, phone, full_name, upi_id, is_working, created_at
     `;
 
+    console.log('🔍 Executing query:', query);
+    console.log('🔍 With values:', values);
+
     const result = await pool.query(query, values);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Distributor not found' });
+    }
+
+    console.log('✅ Profile updated successfully');
 
     res.json({
       message: 'Profile updated successfully',
@@ -345,43 +390,14 @@ router.put('/profile', authenticateToken, async (req, res) => {
         id: result.rows[0].id,
         phone: result.rows[0].phone,
         fullName: result.rows[0].full_name,
-        upiId: result.rows[0].upi_id,
-        isWorking: result.rows[0].is_working
+        upiId: result.rows[0].upi_id || null,
+        isWorking: result.rows[0].is_working !== false
       }
     });
 
   } catch (error) {
     console.error('❌ Update profile error:', error);
-    res.status(500).json({ error: 'Failed to update profile' });
-  }
-});
-
-// =====================================================
-// 8. GET DISTRIBUTOR UPI ID (PUBLIC - for user payments)
-// =====================================================
-
-router.get('/upi/:distributorId', async (req, res) => {
-  try {
-    const { distributorId } = req.params;
-
-    const query = 'SELECT id, full_name, upi_id FROM distributors WHERE id = $1';
-    const result = await pool.query(query, [distributorId]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Distributor not found' });
-    }
-
-    const distributor = result.rows[0];
-
-    res.json({
-      distributorId: distributor.id,
-      name: distributor.full_name,
-      upiId: distributor.upi_id
-    });
-
-  } catch (error) {
-    console.error('❌ Get UPI error:', error);
-    res.status(500).json({ error: 'Failed to get UPI ID' });
+    res.status(500).json({ error: 'Failed to update profile', details: error.message });
   }
 });
 
