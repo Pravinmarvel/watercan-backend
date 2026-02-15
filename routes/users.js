@@ -643,7 +643,7 @@ router.put('/can-status', authenticateToken, async (req, res) => {
 router.get('/apartments', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT id, name, location, price_per_can, created_at
+      SELECT id, name, location, price_per_can, join_code, created_at
       FROM apartment_groups
       ORDER BY name ASC
     `);
@@ -664,7 +664,7 @@ router.get('/apartments/search', async (req, res) => {
 
   try {
     const result = await pool.query(`
-      SELECT id, name, location, price_per_can, created_at
+     SELECT id, name, location, price_per_can, join_code, created_at
       FROM apartment_groups
       WHERE 
         LOWER(name) LIKE $1 OR 
