@@ -636,17 +636,23 @@ router.put('/can-status', authenticateToken, async (req, res) => {
 });
 
 // ======================================
-// APARTMENT ROUTES
+// APARTMENT ROUTES - CRITICAL FIX HERE
 // ======================================
 
 // GET all apartments (PUBLIC - no auth required)
 router.get('/apartments', async (req, res) => {
   try {
+    // ✅ CRITICAL: MUST include join_code here
     const result = await pool.query(`
       SELECT id, name, location, price_per_can, join_code, created_at
       FROM apartment_groups
       ORDER BY name ASC
     `);
+
+    console.log(`✅ Fetched ${result.rows.length} apartments`);
+    if (result.rows.length > 0) {
+      console.log(`📋 Sample: ${result.rows[0].name}, Code: ${result.rows[0].join_code}`);
+    }
 
     res.json({
       success: true,
@@ -663,8 +669,9 @@ router.get('/apartments/search', async (req, res) => {
   const { query } = req.query;
 
   try {
+    // ✅ CRITICAL: MUST include join_code here
     const result = await pool.query(`
-     SELECT id, name, location, price_per_can, join_code, created_at
+      SELECT id, name, location, price_per_can, join_code, created_at
       FROM apartment_groups
       WHERE 
         LOWER(name) LIKE $1 OR 
@@ -731,7 +738,8 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
         u.apartment_id,
         ag.name as apartment_name,
         ag.location,
-        ag.price_per_can
+        ag.price_per_can,
+        ag.join_code
       FROM users u
       LEFT JOIN apartment_groups ag ON u.apartment_id = ag.id
       WHERE u.id = $1
