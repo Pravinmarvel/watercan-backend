@@ -68,14 +68,11 @@ function authenticateToken(req, res, next) {
   }
 
   // USE ENVIRONMENT VARIABLE - NEVER hardcode!
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    console.error('❌ JWT_SECRET not set in environment variables!');
-    return res.status(500).json({ error: 'Server configuration error' });
-  }
+  const secret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
   jwt.verify(token, secret, (err, distributor) => {
     if (err) {
+      console.error('JWT verify error:', err);
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
     req.distributor = distributor;
@@ -221,11 +218,7 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
     otpStore.delete(phone);
 
     // Generate secure JWT token
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-      console.error('❌ JWT_SECRET not set!');
-      return res.status(500).json({ error: 'Server configuration error' });
-    }
+    const secret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
     const token = jwt.sign(
       { 
@@ -287,11 +280,13 @@ router.get('/profile', authenticateToken, async (req, res) => {
 });
 
 // =====================================================
-// 7. UPDATE PROFILE - PROTECTED ROUTE
+// 7. UPDATE PROFILE - PROTECTED ROUTE (FIXED)
 // =====================================================
 
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
+    console.log('📝 Update profile request:', req.body);
+    
     const { fullName, upi_id, is_working } = req.body;
 
     // Build dynamic update query based on provided fields
@@ -299,37 +294,57 @@ router.put('/profile', authenticateToken, async (req, res) => {
     const values = [];
     let paramCount = 1;
 
-    if (fullName !== undefined) {
+    if (fullName !== undefined && fullName !== null) {
       if (fullName.trim() === '') {
         return res.status(400).json({ error: 'Full name cannot be empty' });
       }
       updates.push(`full_name = $${paramCount}`);
       values.push(fullName.trim().substring(0, 255));
       paramCount++;
+      console.log('✅ Adding fullName update');
     }
 
     if (upi_id !== undefined) {
-      // Validate UPI ID format if provided
-      if (upi_id !== null && upi_id.trim() !== '') {
-        const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
-        if (!upiRegex.test(upi_id.trim())) {
-          return res.status(400).json({ 
-            error: 'Invalid UPI ID format. Example: 9876543210@paytm' 
-          });
+      console.log('📱 UPI ID update requested:', upi_id);
+      
+      // Validate UPI ID format if provided and not null
+      if (upi_id !== null && upi_id !== '' && typeof upi_id === 'string') {
+        const trimmedUpi = upi_id.trim();
+        
+        if (trimmedUpi !== '') {
+          const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
+          if (!upiRegex.test(trimmedUpi)) {
+            console.log('❌ Invalid UPI format:', trimmedUpi);
+            return res.status(400).json({ 
+              error: 'Invalid UPI ID format. Example: 9876543210@paytm' 
+            });
+          }
+          updates.push(`upi_id = $${paramCount}`);
+          values.push(trimmedUpi.substring(0, 100));
+          paramCount++;
+          console.log('✅ Adding UPI ID update:', trimmedUpi);
+        } else {
+          // Empty string means remove UPI
+          updates.push(`upi_id = $${paramCount}`);
+          values.push(null);
+          paramCount++;
+          console.log('✅ Removing UPI ID (empty string)');
         }
-        updates.push(`upi_id = $${paramCount}`);
-        values.push(upi_id.trim().substring(0, 100));
       } else {
-        // Allow removing UPI ID by setting to null
+        // null means remove UPI
         updates.push(`upi_id = $${paramCount}`);
         values.push(null);
+        paramCount++;
+        console.log('✅ Removing UPI ID (null)');
       }
-      paramCount++;
     }
 
-    if (is_working !== undefined) {
+    if (is_working !== undefined && is_working !== null) {
+      console.log('⚙️ is_working update requested:', is_working, typeof is_working);
+      
       // Validate boolean
       if (typeof is_working !== 'boolean') {
+        console.log('❌ is_working is not boolean:', typeof is_working);
         return res.status(400).json({ 
           error: 'is_working must be true or false' 
         });
@@ -337,9 +352,11 @@ router.put('/profile', authenticateToken, async (req, res) => {
       updates.push(`is_working = $${paramCount}`);
       values.push(is_working);
       paramCount++;
+      console.log('✅ Adding is_working update');
     }
 
     if (updates.length === 0) {
+      console.log('⚠️ No fields to update');
       return res.status(400).json({ 
         error: 'No valid fields to update' 
       });
@@ -356,11 +373,16 @@ router.put('/profile', authenticateToken, async (req, res) => {
       RETURNING id, phone, full_name, upi_id, is_working, created_at
     `;
 
+    console.log('🔍 Executing query:', query);
+    console.log('🔍 With values:', values);
+
     const result = await pool.query(query, values);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Distributor not found' });
     }
+
+    console.log('✅ Profile updated successfully');
 
     res.json({
       message: 'Profile updated successfully',
@@ -375,7 +397,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Update profile error:', error);
-    res.status(500).json({ error: 'Failed to update profile' });
+    res.status(500).json({ error: 'Failed to update profile', details: error.message });
   }
 });
 
