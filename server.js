@@ -5,7 +5,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { initializeDatabase } = require('./db');
+const { pool, initializeDatabase } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 // =====================================================
 
 app.use(cors({
-  origin: '*', // In production, specify your frontend domain
+  origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
