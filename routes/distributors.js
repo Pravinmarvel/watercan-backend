@@ -1,21 +1,13 @@
-// =====================================================
-// SECURE DISTRIBUTOR ROUTES - PRODUCTION READY
-// =====================================================
-
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt'); // npm install bcrypt
-const rateLimit = require('express-rate-limit'); // npm install express-rate-limit
-
-// =====================================================
-// 1. RATE LIMITING - Prevent brute force attacks
-// =====================================================
+const bcrypt = require('bcrypt');
+const rateLimit = require('express-rate-limit');
 
 const otpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Max 5 requests per 15 minutes per IP
+  windowMs: 15 * 60 * 1000,
+  max: 5,
   message: { error: 'Too many OTP requests. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -23,13 +15,9 @@ const otpLimiter = rateLimit({
 
 const verifyLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10, // Max 10 verification attempts per 15 minutes
+  max: 10,
   message: { error: 'Too many verification attempts. Please try again later.' },
 });
-
-// =====================================================
-// 2. ENCRYPTED OTP STORAGE
-// =====================================================
 
 const otpStore = new Map();
 
@@ -45,7 +33,6 @@ async function verifyOTP(plainOTP, hashedOTP) {
   return await bcrypt.compare(plainOTP, hashedOTP);
 }
 
-// Clean expired OTPs every 5 minutes
 setInterval(() => {
   const now = Date.now();
   for (const [phone, data] of otpStore.entries()) {
@@ -55,10 +42,6 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
-// =====================================================
-// 3. SECURE JWT TOKEN GENERATION
-// =====================================================
-
 function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
@@ -67,7 +50,6 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  // USE ENVIRONMENT VARIABLE - NEVER hardcode!
   const secret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
   
   jwt.verify(token, secret, (err, distributor) => {
@@ -79,15 +61,10 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// =====================================================
-// 4. SEND OTP - WITH RATE LIMITING
-// =====================================================
-
 router.post('/send-otp', otpLimiter, async (req, res) => {
   try {
     const { phone } = req.body;
 
-    // Input validation
     if (!phone || !/^\d{10}$/.test(phone)) {
       return res.status(400).json({ 
         error: 'Valid 10-digit phone number required' 
@@ -96,9 +73,8 @@ router.post('/send-otp', otpLimiter, async (req, res) => {
 
     const otp = generateOTP();
     const hashedOTP = await hashOTP(otp);
-    const expiresAt = Date.now() + (10 * 60 * 1000); // 10 minutes
+    const expiresAt = Date.now() + (10 * 60 * 1000);
 
-    // Store HASHED OTP, not plain text
     otpStore.set(phone, { 
       hashedOTP, 
       expiresAt, 
@@ -107,11 +83,9 @@ router.post('/send-otp', otpLimiter, async (req, res) => {
 
     console.log(`📱 OTP generated for ${phone}: ${otp}`);
 
-    // In production, send via SMS service (Twilio, etc.)
-    // For now, return in response (REMOVE IN PRODUCTION!)
     res.json({ 
       message: 'OTP sent successfully', 
-      otp // ⚠️ REMOVE THIS IN PRODUCTION!
+      otp
     });
 
   } catch (error) {
@@ -120,15 +94,10 @@ router.post('/send-otp', otpLimiter, async (req, res) => {
   }
 });
 
-// =====================================================
-// 5. VERIFY OTP - WITH PROTECTION
-// =====================================================
-
 router.post('/verify-otp', verifyLimiter, async (req, res) => {
   try {
     const { phone, otp, fullName } = req.body;
 
-    // Input validation
     if (!phone || !otp) {
       return res.status(400).json({ 
         error: 'Phone and OTP are required' 
@@ -155,7 +124,6 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
       });
     }
 
-    // Check expiry
     if (Date.now() > storedData.expiresAt) {
       otpStore.delete(phone);
       return res.status(400).json({ 
@@ -163,7 +131,6 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
       });
     }
 
-    // Check max attempts
     if (storedData.attempts >= 5) {
       otpStore.delete(phone);
       return res.status(400).json({ 
@@ -171,7 +138,6 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
       });
     }
 
-    // Verify OTP using bcrypt
     const isValid = await verifyOTP(otp, storedData.hashedOTP);
     
     if (!isValid) {
@@ -179,9 +145,6 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Invalid OTP' });
     }
 
-    // ✅ OTP is valid - proceed with authentication
-
-    // Use parameterized query to prevent SQL injection
     const distributorQuery = 'SELECT * FROM distributors WHERE phone = $1';
     const distributorResult = await pool.query(distributorQuery, [phone]);
 
@@ -189,7 +152,6 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
     let isNewDistributor = false;
 
     if (distributorResult.rows.length === 0) {
-      // New distributor - require name
       if (!fullName || fullName.trim() === '') {
         return res.status(400).json({
           error: 'Full name is required for new distributors',
@@ -197,10 +159,8 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
         });
       }
 
-      // Sanitize input
       const sanitizedName = fullName.trim().substring(0, 255);
 
-      // Insert new distributor with default values
       const insertQuery = 
         'INSERT INTO distributors (phone, full_name, is_working) VALUES ($1, $2, $3) RETURNING *';
       const insertResult = await pool.query(insertQuery, [phone, sanitizedName, true]);
@@ -213,10 +173,8 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
       console.log(`✅ Distributor logged in: ${phone}`);
     }
 
-    // Clear OTP after successful verification
     otpStore.delete(phone);
 
-    // Generate secure JWT token
     const secret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 
     const token = jwt.sign(
@@ -246,13 +204,8 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
   }
 });
 
-// =====================================================
-// 6. GET PROFILE - PROTECTED ROUTE
-// =====================================================
-
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    // Parameterized query to prevent SQL injection
     const query = 
       'SELECT id, phone, full_name, upi_id, is_working, created_at FROM distributors WHERE id = $1';
     const result = await pool.query(query, [req.distributor.distributorId]);
@@ -278,15 +231,10 @@ router.get('/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// =====================================================
-// 7. UPDATE PROFILE - PROTECTED ROUTE
-// =====================================================
-
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
     const { fullName, upi_id, is_working } = req.body;
 
-    // Build dynamic update query
     const updates = [];
     const values = [];
     let paramCount = 1;
@@ -299,7 +247,6 @@ router.put('/profile', authenticateToken, async (req, res) => {
     }
 
     if (upi_id !== undefined) {
-      // Validate UPI ID format if provided
       if (upi_id !== null && upi_id.trim() !== '') {
         const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
         if (!upiRegex.test(upi_id.trim())) {
@@ -326,10 +273,8 @@ router.put('/profile', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'No fields to update' });
     }
 
-    // Add distributor ID to values
     values.push(req.distributor.distributorId);
 
-    // Construct and execute query
     const query = `
       UPDATE distributors 
       SET ${updates.join(', ')} 
@@ -356,10 +301,6 @@ router.put('/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// =====================================================
-// 8. GET DISTRIBUTOR UPI ID (PUBLIC - for user payments)
-// =====================================================
-
 router.get('/upi/:distributorId', async (req, res) => {
   try {
     const { distributorId } = req.params;
@@ -384,7 +325,8 @@ router.get('/upi/:distributorId', async (req, res) => {
     res.status(500).json({ error: 'Failed to get UPI ID' });
   }
 });
-// POST /api/distributors/apartments - Create apartment with distributor info
+
+// ✅ CRITICAL: Create apartment with distributor info
 router.post('/apartments', authenticateToken, async (req, res) => {
   try {
     const { name, location, price_per_can, join_code } = req.body;
@@ -434,7 +376,9 @@ router.post('/apartments', authenticateToken, async (req, res) => {
       RETURNING *
     `, [name.trim(), location.trim(), price_per_can, join_code, distributorId, full_name, upi_id]);
 
-    console.log(`✅ Apartment created by ${full_name}, UPI: ${upi_id || 'Not set'}`);
+    console.log(`✅ Apartment created by ${full_name} (ID: ${distributorId})`);
+    console.log(`   UPI: ${upi_id || 'Not set'}`);
+    console.log(`   Code: ${join_code}`);
 
     res.status(201).json({
       message: 'Apartment created successfully',
@@ -445,4 +389,5 @@ router.post('/apartments', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to create apartment' });
   }
 });
+
 module.exports = router;

@@ -38,7 +38,7 @@ router.post('/send-otp', async (req, res) => {
     
     console.log(`📱 OTP generated for ${phone}: ${otp}`);
     
-    res.json({ message: 'OTP sent successfully', otp: otp }); // Remove otp in production
+    res.json({ message: 'OTP sent successfully', otp: otp });
 
   } catch (error) {
     console.error('❌ Send OTP error:', error);
@@ -75,7 +75,6 @@ router.post('/verify-otp', async (req, res) => {
       return res.status(400).json({ error: 'Invalid OTP' });
     }
 
-    // Check if user exists
     const userQuery = 'SELECT * FROM users WHERE phone = $1';
     const userResult = await pool.query(userQuery, [phone]);
 
@@ -125,7 +124,6 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// Middleware to verify JWT token
 function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
@@ -147,7 +145,6 @@ function authenticateToken(req, res, next) {
   );
 }
 
-// GET /api/users/profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
     const query = 'SELECT id, phone, full_name, created_at FROM users WHERE id = $1';
@@ -172,7 +169,6 @@ router.get('/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// PUT /api/users/profile
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
     const { fullName } = req.body;
@@ -200,16 +196,10 @@ router.put('/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// ======================================
-// ADDRESSES ENDPOINTS
-// ======================================
-
-// GET /api/users/addresses
 router.get('/addresses', authenticateToken, async (req, res) => {
   try {
     const query = 'SELECT * FROM addresses WHERE user_id = $1 ORDER BY created_at DESC';
     const result = await pool.query(query, [req.user.userId]);
-
     res.json({ addresses: result.rows });
   } catch (error) {
     console.error('❌ Get addresses error:', error);
@@ -217,7 +207,6 @@ router.get('/addresses', authenticateToken, async (req, res) => {
   }
 });
 
-// POST /api/users/addresses
 router.post('/addresses', authenticateToken, async (req, res) => {
   try {
     const { address_line, latitude, longitude } = req.body;
@@ -251,7 +240,6 @@ router.post('/addresses', authenticateToken, async (req, res) => {
   }
 });
 
-// PUT /api/users/addresses/:id
 router.put('/addresses/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -290,368 +278,27 @@ router.put('/addresses/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// ======================================
-// ORDERS ENDPOINTS
-// ======================================
-
-// GET /api/users/orders
-router.get('/orders', authenticateToken, async (req, res) => {
-  try {
-    const query = `
-      SELECT o.*, a.address_line, a.latitude, a.longitude 
-      FROM orders o 
-      LEFT JOIN addresses a ON o.address_id = a.id 
-      WHERE o.user_id = $1 
-      ORDER BY o.created_at DESC
-    `;
-    const result = await pool.query(query, [req.user.userId]);
-
-    res.json({ orders: result.rows });
-  } catch (error) {
-    console.error('❌ Get orders error:', error);
-    res.status(500).json({ error: 'Failed to get orders' });
-  }
-});
-
-// POST /api/users/orders
-router.post('/orders', authenticateToken, async (req, res) => {
-  try {
-    const { address_id, quantity, total_amount, status } = req.body;
-    
-    if (!address_id || !quantity || !total_amount) {
-      return res.status(400).json({ error: 'Address ID, quantity, and total amount are required' });
-    }
-
-    const query = `
-      INSERT INTO orders (user_id, address_id, quantity, total_amount, status) 
-      VALUES ($1, $2, $3, $4, $5) 
-      RETURNING *
-    `;
-    const result = await pool.query(query, [
-      req.user.userId,
-      address_id,
-      quantity,
-      total_amount,
-      status || 'pending'
-    ]);
-
-    console.log(`✅ Order created for user ${req.user.userId}`);
-
-    res.status(201).json({
-      message: 'Order created successfully',
-      order: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('❌ Create order error:', error);
-    res.status(500).json({ error: 'Failed to create order' });
-  }
-});
-
-// ======================================
-// PAYMENTS ENDPOINTS
-// ======================================
-
-// GET /api/users/payments
-router.get('/payments', authenticateToken, async (req, res) => {
-  try {
-    const query = `
-      SELECT p.*, o.quantity, o.total_amount as order_amount
-      FROM payments p
-      LEFT JOIN orders o ON p.order_id = o.id
-      WHERE o.user_id = $1 
-      ORDER BY p.paid_at DESC
-    `;
-    const result = await pool.query(query, [req.user.userId]);
-
-    res.json({ payments: result.rows });
-  } catch (error) {
-    console.error('❌ Get payments error:', error);
-    res.status(500).json({ error: 'Failed to get payments' });
-  }
-});
-
-// POST /api/users/payments
-router.post('/payments', authenticateToken, async (req, res) => {
-  try {
-    const { order_id, method, amount, status } = req.body;
-    
-    if (!order_id || !method || !amount) {
-      return res.status(400).json({ error: 'Order ID, method, and amount are required' });
-    }
-
-    // Verify order belongs to user
-    const orderCheck = await pool.query(
-      'SELECT * FROM orders WHERE id = $1 AND user_id = $2',
-      [order_id, req.user.userId]
-    );
-
-    if (orderCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Order not found' });
-    }
-
-    const query = `
-      INSERT INTO payments (order_id, method, amount, status) 
-      VALUES ($1, $2, $3, $4) 
-      RETURNING *
-    `;
-    const result = await pool.query(query, [
-      order_id,
-      method,
-      amount,
-      status || 'success'
-    ]);
-
-    // Update order status to completed
-    await pool.query(
-      'UPDATE orders SET status = $1 WHERE id = $2',
-      ['completed', order_id]
-    );
-
-    console.log(`✅ Payment created for order ${order_id}`);
-
-    res.status(201).json({
-      message: 'Payment created successfully',
-      payment: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('❌ Create payment error:', error);
-    res.status(500).json({ error: 'Failed to create payment' });
-  }
-});
-
-// ======================================
-// SUBSCRIPTIONS ENDPOINTS
-// ======================================
-
-// GET /api/users/subscriptions
-router.get('/subscriptions', authenticateToken, async (req, res) => {
-  try {
-    const query = 'SELECT * FROM subscriptions WHERE user_id = $1 ORDER BY started_at DESC';
-    const result = await pool.query(query, [req.user.userId]);
-
-    res.json({ subscriptions: result.rows });
-  } catch (error) {
-    console.error('❌ Get subscriptions error:', error);
-    res.status(500).json({ error: 'Failed to get subscriptions' });
-  }
-});
-
-// GET /api/users/subscriptions/active
-router.get('/subscriptions/active', authenticateToken, async (req, res) => {
-  try {
-    const query = 'SELECT * FROM subscriptions WHERE user_id = $1 AND is_active = true LIMIT 1';
-    const result = await pool.query(query, [req.user.userId]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ subscription: null });
-    }
-
-    res.json({ subscription: result.rows[0] });
-  } catch (error) {
-    console.error('❌ Get active subscription error:', error);
-    res.status(500).json({ error: 'Failed to get active subscription' });
-  }
-});
-
-// POST /api/users/subscriptions
-router.post('/subscriptions', authenticateToken, async (req, res) => {
-  try {
-    const { is_active, started_at, ended_at } = req.body;
-    
-    const query = `
-      INSERT INTO subscriptions (user_id, is_active, started_at, ended_at) 
-      VALUES ($1, $2, $3, $4) 
-      RETURNING *
-    `;
-    const result = await pool.query(query, [
-      req.user.userId,
-      is_active !== undefined ? is_active : true,
-      started_at || new Date().toISOString(),
-      ended_at || null
-    ]);
-
-    console.log(`✅ Subscription created for user ${req.user.userId}`);
-
-    res.status(201).json({
-      message: 'Subscription created successfully',
-      subscription: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('❌ Create subscription error:', error);
-    res.status(500).json({ error: 'Failed to create subscription' });
-  }
-});
-
-// POST /api/users/subscriptions/:id/activate
-router.post('/subscriptions/:id/activate', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    // Deactivate all other subscriptions first
-    await pool.query(
-      'UPDATE subscriptions SET is_active = false WHERE user_id = $1',
-      [req.user.userId]
-    );
-    
-    const query = `
-      UPDATE subscriptions 
-      SET is_active = true, started_at = $1 
-      WHERE id = $2 AND user_id = $3 
-      RETURNING *
-    `;
-    const result = await pool.query(query, [
-      new Date().toISOString(),
-      id,
-      req.user.userId
-    ]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Subscription not found' });
-    }
-
-    res.json({
-      message: 'Subscription activated successfully',
-      subscription: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('❌ Activate subscription error:', error);
-    res.status(500).json({ error: 'Failed to activate subscription' });
-  }
-});
-
-// POST /api/users/subscriptions/:id/deactivate
-router.post('/subscriptions/:id/deactivate', authenticateToken, async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const query = `
-      UPDATE subscriptions 
-      SET is_active = false, ended_at = $1 
-      WHERE id = $2 AND user_id = $3 
-      RETURNING *
-    `;
-    const result = await pool.query(query, [
-      new Date().toISOString(),
-      id,
-      req.user.userId
-    ]);
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Subscription not found' });
-    }
-
-    res.json({
-      message: 'Subscription deactivated successfully',
-      subscription: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('❌ Deactivate subscription error:', error);
-    res.status(500).json({ error: 'Failed to deactivate subscription' });
-  }
-});
-
-// ======================================
-// CAN STATUS ENDPOINTS
-// ======================================
-
-// GET /api/users/can-status
-router.get('/can-status', authenticateToken, async (req, res) => {
-  try {
-    const query = 'SELECT * FROM can_status WHERE user_id = $1 LIMIT 1';
-    const result = await pool.query(query, [req.user.userId]);
-
-    if (result.rows.length === 0) {
-      // Create default can status if not exists
-      const insertQuery = `
-        INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full) 
-        VALUES ($1, true, true, true) 
-        RETURNING *
-      `;
-      const insertResult = await pool.query(insertQuery, [req.user.userId]);
-      return res.json({ canStatus: insertResult.rows[0] });
-    }
-
-    res.json({ canStatus: result.rows[0] });
-  } catch (error) {
-    console.error('❌ Get can status error:', error);
-    res.status(500).json({ error: 'Failed to get can status' });
-  }
-});
-
-// PUT /api/users/can-status
-router.put('/can-status', authenticateToken, async (req, res) => {
-  try {
-    const { can_1_full, can_2_full, can_3_full } = req.body;
-    
-    // Check if can status exists
-    const checkQuery = 'SELECT * FROM can_status WHERE user_id = $1';
-    const checkResult = await pool.query(checkQuery, [req.user.userId]);
-
-    let result;
-    if (checkResult.rows.length === 0) {
-      // Create new can status
-      const insertQuery = `
-        INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full) 
-        VALUES ($1, $2, $3, $4) 
-        RETURNING *
-      `;
-      result = await pool.query(insertQuery, [
-        req.user.userId,
-        can_1_full !== undefined ? can_1_full : true,
-        can_2_full !== undefined ? can_2_full : true,
-        can_3_full !== undefined ? can_3_full : true
-      ]);
-    } else {
-      // Update existing can status
-      const updateQuery = `
-        UPDATE can_status 
-        SET can_1_full = $1, can_2_full = $2, can_3_full = $3, updated_at = CURRENT_TIMESTAMP
-        WHERE user_id = $4 
-        RETURNING *
-      `;
-      result = await pool.query(updateQuery, [
-        can_1_full !== undefined ? can_1_full : checkResult.rows[0].can_1_full,
-        can_2_full !== undefined ? can_2_full : checkResult.rows[0].can_2_full,
-        can_3_full !== undefined ? can_3_full : checkResult.rows[0].can_3_full,
-        req.user.userId
-      ]);
-    }
-
-    console.log(`✅ Can status updated for user ${req.user.userId}`);
-
-    res.json({
-      message: 'Can status updated successfully',
-      canStatus: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('❌ Update can status error:', error);
-    res.status(500).json({ error: 'Failed to update can status' });
-  }
-});
-
-// ======================================
-// APARTMENT ROUTES - CRITICAL FIX HERE
-// ======================================
-
-// GET all apartments (PUBLIC - no auth required)
+// ✅ CRITICAL: GET /apartments with distributor info
 router.get('/apartments', async (req, res) => {
   try {
-    // ✅ CRITICAL: MUST include join_code here
     const result = await pool.query(`
-      SELECT id, name, location, price_per_can, join_code, created_at
+      SELECT 
+        id, 
+        name, 
+        location, 
+        price_per_can, 
+        join_code, 
+        distributor_id,
+        distributor_name,
+        distributor_upi_id,
+        created_at
       FROM apartment_groups
       ORDER BY name ASC
     `);
 
-    console.log(`✅ Fetched ${result.rows.length} apartments`);
+    console.log(`✅ Fetched ${result.rows.length} apartments with distributor info`);
     if (result.rows.length > 0) {
-      console.log(`📋 Sample: ${result.rows[0].name}, Code: ${result.rows[0].join_code}`);
+      console.log(`📋 Sample: ${result.rows[0].name}, Distributor: ${result.rows[0].distributor_name}, Code: ${result.rows[0].join_code}`);
     }
 
     res.json({
@@ -664,14 +311,21 @@ router.get('/apartments', async (req, res) => {
   }
 });
 
-// GET apartments with search (PUBLIC - no auth required)
 router.get('/apartments/search', async (req, res) => {
   const { query } = req.query;
 
   try {
-    // ✅ CRITICAL: MUST include join_code here
     const result = await pool.query(`
-      SELECT id, name, location, price_per_can, join_code, created_at
+      SELECT 
+        id, 
+        name, 
+        location, 
+        price_per_can, 
+        join_code,
+        distributor_id,
+        distributor_name,
+        distributor_upi_id,
+        created_at
       FROM apartment_groups
       WHERE 
         LOWER(name) LIKE $1 OR 
@@ -689,12 +343,10 @@ router.get('/apartments/search', async (req, res) => {
   }
 });
 
-// UPDATE user's apartment (REQUIRES AUTH)
 router.put('/:userId/apartment', authenticateToken, async (req, res) => {
   const { userId } = req.params;
   const { apartment_id } = req.body;
 
-  // Verify user owns this account
   if (req.user.userId !== parseInt(userId)) {
     return res.status(403).json({ error: 'Unauthorized' });
   }
@@ -722,11 +374,9 @@ router.put('/:userId/apartment', authenticateToken, async (req, res) => {
   }
 });
 
-// GET user's apartment details (REQUIRES AUTH)
 router.get('/:userId/apartment', authenticateToken, async (req, res) => {
   const { userId } = req.params;
 
-  // Verify user owns this account
   if (req.user.userId !== parseInt(userId)) {
     return res.status(403).json({ error: 'Unauthorized' });
   }
@@ -739,7 +389,9 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
         ag.name as apartment_name,
         ag.location,
         ag.price_per_can,
-        ag.join_code
+        ag.join_code,
+        ag.distributor_name,
+        ag.distributor_upi_id
       FROM users u
       LEFT JOIN apartment_groups ag ON u.apartment_id = ag.id
       WHERE u.id = $1
