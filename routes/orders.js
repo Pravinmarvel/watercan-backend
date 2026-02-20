@@ -3,7 +3,7 @@ const router = express.Router();
 const { pool } = require('../db');
 const jwt = require('jsonwebtoken');
 
-// Authentication middleware
+// ✅ Authentication middleware - SAME as users.js
 function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
@@ -19,7 +19,7 @@ function authenticateToken(req, res, next) {
       if (err) {
         return res.status(403).json({ error: 'Invalid or expired token' });
       }
-      req.user = user;
+      req.user = user; // ✅ Sets req.user (not req.userId)
       next();
     }
   );
@@ -28,7 +28,7 @@ function authenticateToken(req, res, next) {
 // POST /api/orders - Create new order
 router.post('/', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
     const { address_id, quantity, total_amount, status } = req.body;
 
     console.log(`📤 Creating order for user ${userId}:`, {
@@ -83,7 +83,7 @@ router.post('/', authenticateToken, async (req, res) => {
 // GET /api/orders - Get all orders for user
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
 
     console.log(`📤 Getting orders for user ${userId}`);
 
@@ -109,7 +109,7 @@ router.get('/', authenticateToken, async (req, res) => {
 // GET /api/orders/:id - Get specific order
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
     const orderId = req.params.id;
 
     console.log(`📤 Getting order ${orderId} for user ${userId}`);
@@ -139,7 +139,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
 // PUT /api/orders/:id - Update order
 router.put('/:id', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
     const orderId = req.params.id;
     const { address_id, quantity, total_amount, status } = req.body;
 
@@ -180,7 +180,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
 // PATCH /api/orders/:id/status - Update order status only
 router.patch('/:id/status', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
     const orderId = req.params.id;
     const { status } = req.body;
 
@@ -191,7 +191,7 @@ router.patch('/:id/status', authenticateToken, async (req, res) => {
     }
 
     // Validate status values
-    const validStatuses = ['pending', 'confirmed', 'delivered', 'cancelled'];
+    const validStatuses = ['pending', 'confirmed', 'delivered', 'cancelled', 'completed'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ 
         error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` 
@@ -226,7 +226,7 @@ router.patch('/:id/status', authenticateToken, async (req, res) => {
 // DELETE /api/orders/:id - Delete order
 router.delete('/:id', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
     const orderId = req.params.id;
 
     console.log(`📤 Deleting order ${orderId} for user ${userId}`);
