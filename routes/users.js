@@ -124,6 +124,7 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
+// Authentication middleware
 function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
@@ -145,6 +146,7 @@ function authenticateToken(req, res, next) {
   );
 }
 
+// GET /api/users/profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
     const query = 'SELECT id, phone, full_name, created_at FROM users WHERE id = $1';
@@ -169,6 +171,7 @@ router.get('/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// PUT /api/users/profile
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
     const { fullName } = req.body;
@@ -196,6 +199,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/users/addresses
 router.get('/addresses', authenticateToken, async (req, res) => {
   try {
     const query = 'SELECT * FROM addresses WHERE user_id = $1 ORDER BY created_at DESC';
@@ -207,6 +211,7 @@ router.get('/addresses', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/users/addresses
 router.post('/addresses', authenticateToken, async (req, res) => {
   try {
     const { address_line, latitude, longitude } = req.body;
@@ -240,6 +245,7 @@ router.post('/addresses', authenticateToken, async (req, res) => {
   }
 });
 
+// PUT /api/users/addresses/:id
 router.put('/addresses/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -278,7 +284,91 @@ router.put('/addresses/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// ✅ CRITICAL: GET /apartments with distributor info
+// ========================================
+// CAN STATUS ENDPOINTS
+// ========================================
+
+// GET /api/users/can-status
+router.get('/can-status', authenticateToken, async (req, res) => {
+  try {
+    console.log(`📤 Getting can status for user ${req.user.userId}`);
+    
+    const result = await pool.query(
+      'SELECT * FROM can_status WHERE user_id = $1',
+      [req.user.userId]
+    );
+
+    if (result.rows.length === 0) {
+      console.log(`🆕 Creating default can status for user ${req.user.userId}`);
+      
+      const newStatus = await pool.query(
+        `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, updated_at) 
+         VALUES ($1, true, true, true, CURRENT_TIMESTAMP) 
+         RETURNING *`,
+        [req.user.userId]
+      );
+      
+      console.log(`✅ Default can status created`);
+      return res.json({ canStatus: newStatus.rows[0] });
+    }
+
+    console.log(`✅ Can status found`);
+    res.json({ canStatus: result.rows[0] });
+
+  } catch (error) {
+    console.error('❌ Error getting can status:', error);
+    res.status(500).json({ error: 'Failed to get can status' });
+  }
+});
+
+// PUT /api/users/can-status
+router.put('/can-status', authenticateToken, async (req, res) => {
+  try {
+    const { can_1_full, can_2_full, can_3_full } = req.body;
+    
+    console.log(`📤 Updating can status for user ${req.user.userId}`);
+
+    if (
+      typeof can_1_full !== 'boolean' || 
+      typeof can_2_full !== 'boolean' || 
+      typeof can_3_full !== 'boolean'
+    ) {
+      return res.status(400).json({ 
+        error: 'All can status values must be boolean' 
+      });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, updated_at)
+       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id) 
+       DO UPDATE SET 
+         can_1_full = $2, 
+         can_2_full = $3, 
+         can_3_full = $4, 
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [req.user.userId, can_1_full, can_2_full, can_3_full]
+    );
+
+    console.log(`✅ Can status updated successfully`);
+
+    res.json({ 
+      message: 'Can status updated successfully',
+      canStatus: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Error updating can status:', error);
+    res.status(500).json({ error: 'Failed to update can status' });
+  }
+});
+
+// ========================================
+// APARTMENT ENDPOINTS
+// ========================================
+
+// GET /api/users/apartments
 router.get('/apartments', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -296,10 +386,7 @@ router.get('/apartments', async (req, res) => {
       ORDER BY name ASC
     `);
 
-    console.log(`✅ Fetched ${result.rows.length} apartments with distributor info`);
-    if (result.rows.length > 0) {
-      console.log(`📋 Sample: ${result.rows[0].name}, Distributor: ${result.rows[0].distributor_name}, Code: ${result.rows[0].join_code}`);
-    }
+    console.log(`✅ Fetched ${result.rows.length} apartments`);
 
     res.json({
       success: true,
@@ -311,6 +398,7 @@ router.get('/apartments', async (req, res) => {
   }
 });
 
+// GET /api/users/apartments/search
 router.get('/apartments/search', async (req, res) => {
   const { query } = req.query;
 
@@ -343,6 +431,7 @@ router.get('/apartments/search', async (req, res) => {
   }
 });
 
+// PUT /api/users/:userId/apartment
 router.put('/:userId/apartment', authenticateToken, async (req, res) => {
   const { userId } = req.params;
   const { apartment_id } = req.body;
@@ -374,6 +463,7 @@ router.put('/:userId/apartment', authenticateToken, async (req, res) => {
   }
 });
 
+// GET /api/users/:userId/apartment
 router.get('/:userId/apartment', authenticateToken, async (req, res) => {
   const { userId } = req.params;
 
