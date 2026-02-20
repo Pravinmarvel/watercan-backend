@@ -267,6 +267,8 @@ router.put('/profile', authenticateToken, async (req, res) => {
       updates.push(`is_working = $${paramCount}`);
       values.push(is_working);
       paramCount++;
+      
+      console.log(`🔄 Distributor ${req.distributor.distributorId} working status changed to: ${is_working ? 'Working' : 'Holiday'}`);
     }
 
     if (updates.length === 0) {
@@ -284,6 +286,8 @@ router.put('/profile', authenticateToken, async (req, res) => {
 
     const result = await pool.query(query, values);
 
+    console.log(`✅ Profile updated: Working status is now ${result.rows[0].is_working ? 'Working' : 'Holiday'}`);
+
     res.json({
       message: 'Profile updated successfully',
       distributor: {
@@ -298,6 +302,36 @@ router.put('/profile', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('❌ Update profile error:', error);
     res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+// ✅ NEW: Get distributor working status by ID (for user app)
+router.get('/:distributorId/status', async (req, res) => {
+  try {
+    const { distributorId } = req.params;
+
+    console.log(`📤 Getting working status for distributor ${distributorId}`);
+
+    const query = 'SELECT id, full_name, is_working FROM distributors WHERE id = $1';
+    const result = await pool.query(query, [distributorId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Distributor not found' });
+    }
+
+    const distributor = result.rows[0];
+
+    console.log(`✅ Distributor status: ${distributor.is_working ? 'Working' : 'Holiday'}`);
+
+    res.json({
+      distributorId: distributor.id,
+      name: distributor.full_name,
+      isWorking: distributor.is_working
+    });
+
+  } catch (error) {
+    console.error('❌ Get distributor status error:', error);
+    res.status(500).json({ error: 'Failed to get distributor status' });
   }
 });
 
@@ -326,7 +360,6 @@ router.get('/upi/:distributorId', async (req, res) => {
   }
 });
 
-// ✅ CRITICAL: Create apartment with distributor info
 router.post('/apartments', authenticateToken, async (req, res) => {
   try {
     const { name, location, price_per_can, join_code } = req.body;
@@ -344,7 +377,6 @@ router.post('/apartments', authenticateToken, async (req, res) => {
       });
     }
 
-    // Check duplicate code
     const codeCheck = await pool.query(
       'SELECT id FROM apartment_groups WHERE join_code = $1',
       [join_code]
@@ -355,7 +387,6 @@ router.post('/apartments', authenticateToken, async (req, res) => {
       });
     }
 
-    // Get distributor info
     const distributorQuery = await pool.query(
       'SELECT full_name, upi_id FROM distributors WHERE id = $1',
       [distributorId]
@@ -366,7 +397,6 @@ router.post('/apartments', authenticateToken, async (req, res) => {
 
     const { full_name, upi_id } = distributorQuery.rows[0];
 
-    // Insert with distributor info
     const result = await pool.query(`
       INSERT INTO apartment_groups (
         name, location, price_per_can, join_code, 
