@@ -53,6 +53,7 @@ const distributorRoutes = require('./routes/distributors');
 const returnRoutes = require('./routes/returns');
 const orderRoutes = require('./routes/orders');  // ← CRITICAL: ADD THIS!
 const canStatusRoutes = require('./routes/canstatus');  // ← ADD THIS!
+const subscriptionRoutes = require('./routes/subscriptions');  // ← ADD THIS!
 
 // ✅ CRITICAL: Mount ALL routes
 app.use('/api/users', userRoutes);
@@ -60,6 +61,7 @@ app.use('/api/distributors', distributorRoutes);
 app.use('/api/returns', returnRoutes);
 app.use('/api/orders', orderRoutes);  // ← CRITICAL: ADD THIS!
 app.use('/api/can-status', canStatusRoutes);  // ← ADD THIS!
+app.use('/api/subscriptions', subscriptionRoutes);  // ← ADD THIS!
 
 // =====================================================
 // ERROR HANDLING
@@ -105,6 +107,7 @@ async function startServer() {
       console.log(`   ✅ /api/users          - User authentication & profile`);
       console.log(`   ✅ /api/orders         - Order management (CRITICAL!)`);
       console.log(`   ✅ /api/can-status     - Can status tracking`);
+      console.log(`   ✅ /api/subscriptions  - Subscription management`);
       console.log(`   ✅ /api/distributors   - Distributor management`);
       console.log(`   ✅ /api/returns        - Return management`);
       console.log(`\n⚙️  Environment: ${process.env.NODE_ENV || 'development'}`);
