@@ -124,7 +124,10 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// Authentication middleware
+// =====================================================
+// AUTHENTICATION MIDDLEWARE
+// =====================================================
+
 function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
@@ -141,6 +144,29 @@ function authenticateToken(req, res, next) {
         return res.status(403).json({ error: 'Invalid or expired token' });
       }
       req.user = user;
+      next();
+    }
+  );
+}
+
+// ✅ NEW: Middleware that allows BOTH user tokens AND distributor tokens
+function authenticateAny(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
+  jwt.verify(
+    token, 
+    process.env.JWT_SECRET || 'watercan-secret-key-2026', 
+    (err, decoded) => {
+      if (err) {
+        return res.status(403).json({ error: 'Invalid or expired token' });
+      }
+      // Token can have either userId (user) or distributorId (distributor)
+      req.user = decoded;
       next();
     }
   );
@@ -352,6 +378,60 @@ router.put('/can-status', authenticateToken, async (req, res) => {
     );
 
     console.log(`✅ Can status updated successfully`);
+
+    res.json({ 
+      message: 'Can status updated successfully',
+      canStatus: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Error updating can status:', error);
+    res.status(500).json({ error: 'Failed to update can status' });
+  }
+});
+
+// ✅ NEW: PUT /api/users/:userId/can-status - Allows distributors to update user can status
+router.put('/:userId/can-status', authenticateAny, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { can_1_full, can_2_full, can_3_full } = req.body;
+    
+    console.log(`📤 Distributor updating can status for user ${userId}`);
+    console.log(`   Token user: ${JSON.stringify(req.user)}`);
+
+    // Validate that this is a distributor token OR the user's own token
+    const isDistributor = req.user.distributorId !== undefined;
+    const isOwnUser = req.user.userId == userId;
+
+    if (!isDistributor && !isOwnUser) {
+      return res.status(403).json({ error: 'Not authorized to update this user' });
+    }
+
+    if (
+      typeof can_1_full !== 'boolean' || 
+      typeof can_2_full !== 'boolean' || 
+      typeof can_3_full !== 'boolean'
+    ) {
+      return res.status(400).json({ 
+        error: 'All can status values must be boolean' 
+      });
+    }
+
+    // Update the can status for the specified user
+    const result = await pool.query(
+      `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, updated_at)
+       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id) 
+       DO UPDATE SET 
+         can_1_full = $2, 
+         can_2_full = $3, 
+         can_3_full = $4, 
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [userId, can_1_full, can_2_full, can_3_full]
+    );
+
+    console.log(`✅ Can status updated for user ${userId} by distributor`);
 
     res.json({ 
       message: 'Can status updated successfully',
