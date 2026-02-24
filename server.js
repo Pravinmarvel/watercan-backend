@@ -1,5 +1,5 @@
 // =====================================================
-// WATERCAN BACKEND - COMPLETE SERVER
+// WATERCAN BACKEND - UPDATED SERVER WITH APARTMENTS ROUTE
 // =====================================================
 require('dotenv').config();
 const express = require('express');
@@ -34,7 +34,7 @@ app.get('/', (req, res) => {
   res.json({
     message: 'WaterCan Backend API',
     status: 'running',
-    version: '2.0.0',
+    version: '2.1.0',
     timestamp: new Date().toISOString()
   });
 });
@@ -47,21 +47,23 @@ app.get('/health', (req, res) => {
   });
 });
 
-// ✅ CRITICAL: Import ALL route modules
+// ✅ Import ALL route modules
 const userRoutes = require('./routes/users');
 const distributorRoutes = require('./routes/distributors');
 const returnRoutes = require('./routes/returns');
-const orderRoutes = require('./routes/orders');  // ← CRITICAL: ADD THIS!
-const canStatusRoutes = require('./routes/canstatus');  // ← ADD THIS!
-const subscriptionRoutes = require('./routes/subscriptions');  // ← ADD THIS!
+const orderRoutes = require('./routes/orders');
+const canStatusRoutes = require('./routes/canstatus');
+const subscriptionRoutes = require('./routes/subscriptions');
+const apartmentRoutes = require('./routes/apartments');  // ✅ NEW!
 
-// ✅ CRITICAL: Mount ALL routes
+// ✅ Mount ALL routes
 app.use('/api/users', userRoutes);
 app.use('/api/distributors', distributorRoutes);
 app.use('/api/returns', returnRoutes);
-app.use('/api/orders', orderRoutes);  // ← CRITICAL: ADD THIS!
-app.use('/api/can-status', canStatusRoutes);  // ← ADD THIS!
-app.use('/api/subscriptions', subscriptionRoutes);  // ← ADD THIS!
+app.use('/api/orders', orderRoutes);
+app.use('/api/can-status', canStatusRoutes);
+app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/apartments', apartmentRoutes);  // ✅ NEW!
 
 // =====================================================
 // ERROR HANDLING
@@ -97,21 +99,22 @@ async function startServer() {
     console.log('✅ Database initialized');
     
     app.listen(PORT, () => {
-      console.log(`\n${'='.repeat(50)}`);
-      console.log(`🚀 WaterCan Server Running`);
-      console.log(`${'='.repeat(50)}`);
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`🚀 WaterCan Server Running - v2.1.0`);
+      console.log(`${'='.repeat(60)}`);
       console.log(`📍 Port: ${PORT}`);
       console.log(`📍 Health: http://localhost:${PORT}/health`);
       console.log(`📍 API Base: http://localhost:${PORT}/api`);
       console.log(`\n📋 Mounted Routes:`);
       console.log(`   ✅ /api/users          - User authentication & profile`);
-      console.log(`   ✅ /api/orders         - Order management (CRITICAL!)`);
+      console.log(`   ✅ /api/orders         - Order management`);
       console.log(`   ✅ /api/can-status     - Can status tracking`);
       console.log(`   ✅ /api/subscriptions  - Subscription management`);
       console.log(`   ✅ /api/distributors   - Distributor management`);
       console.log(`   ✅ /api/returns        - Return management`);
+      console.log(`   ✅ /api/apartments     - Apartment residents & orders (NEW!)`);
       console.log(`\n⚙️  Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`${'='.repeat(50)}\n`);
+      console.log(`${'='.repeat(60)}\n`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
