@@ -1,5 +1,5 @@
 // =====================================================
-// WATERCAN BACKEND - UPDATED SERVER WITH APARTMENTS ROUTE
+// WATERCAN BACKEND - PRODUCTION READY v2.2.0
 // =====================================================
 require('dotenv').config();
 const express = require('express');
@@ -26,44 +26,76 @@ app.use((req, res, next) => {
 });
 
 // =====================================================
-// ROUTES
+// HEALTH & ROOT ENDPOINTS
 // =====================================================
 
-// Health check
+// Root endpoint
 app.get('/', (req, res) => {
   res.json({
     message: 'WaterCan Backend API',
     status: 'running',
-    version: '2.1.0',
-    timestamp: new Date().toISOString()
-  });
-});
-
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
+    version: '2.2.0',
     timestamp: new Date().toISOString(),
-    database: pool ? 'connected' : 'disconnected'
+    endpoints: {
+      health: '/health',
+      users: '/api/users',
+      orders: '/api/orders',
+      apartments: '/api/apartments',
+      distributors: '/api/distributors',
+      canStatus: '/api/can-status',
+      subscriptions: '/api/subscriptions',
+      returns: '/api/returns'
+    }
   });
 });
 
-// ✅ Import ALL route modules
+// Health check endpoint (proper implementation)
+app.get('/health', async (req, res) => {
+  try {
+    // Test database connection
+    const dbCheck = await pool.query('SELECT NOW()');
+    
+    res.json({ 
+      status: 'ok',
+      service: 'watercan-backend',
+      version: '2.2.0',
+      timestamp: new Date().toISOString(),
+      database: 'connected',
+      uptime: process.uptime(),
+      dbTime: dbCheck.rows[0].now
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: 'error',
+      service: 'watercan-backend',
+      timestamp: new Date().toISOString(),
+      database: 'disconnected',
+      error: error.message
+    });
+  }
+});
+
+// =====================================================
+// API ROUTES
+// =====================================================
+
+// Import ALL route modules
 const userRoutes = require('./routes/users');
 const distributorRoutes = require('./routes/distributors');
 const returnRoutes = require('./routes/returns');
 const orderRoutes = require('./routes/orders');
 const canStatusRoutes = require('./routes/canstatus');
 const subscriptionRoutes = require('./routes/subscriptions');
-const apartmentRoutes = require('./routes/apartments');  // ✅ NEW!
+const apartmentRoutes = require('./routes/apartments');
 
-// ✅ Mount ALL routes
+// Mount ALL routes
 app.use('/api/users', userRoutes);
 app.use('/api/distributors', distributorRoutes);
 app.use('/api/returns', returnRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/can-status', canStatusRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
-app.use('/api/apartments', apartmentRoutes);  // ✅ NEW!
+app.use('/api/apartments', apartmentRoutes);
 
 // =====================================================
 // ERROR HANDLING
@@ -75,7 +107,8 @@ app.use((req, res) => {
   res.status(404).json({ 
     error: 'Route not found',
     path: req.path,
-    method: req.method
+    method: req.method,
+    message: `The endpoint ${req.method} ${req.path} does not exist`
   });
 });
 
@@ -100,20 +133,24 @@ async function startServer() {
     
     app.listen(PORT, () => {
       console.log(`\n${'='.repeat(60)}`);
-      console.log(`🚀 WaterCan Server Running - v2.1.0`);
+      console.log(`🚀 WaterCan Server Running - v2.2.0`);
       console.log(`${'='.repeat(60)}`);
       console.log(`📍 Port: ${PORT}`);
-      console.log(`📍 Health: http://localhost:${PORT}/health`);
-      console.log(`📍 API Base: http://localhost:${PORT}/api`);
+      console.log(`📍 URL: https://watercan-backend-gdkp.onrender.com`);
+      console.log(`📍 Health: https://watercan-backend-gdkp.onrender.com/health`);
+      console.log(`📍 API Base: https://watercan-backend-gdkp.onrender.com/api`);
       console.log(`\n📋 Mounted Routes:`);
-      console.log(`   ✅ /api/users          - User authentication & profile`);
-      console.log(`   ✅ /api/orders         - Order management`);
-      console.log(`   ✅ /api/can-status     - Can status tracking`);
-      console.log(`   ✅ /api/subscriptions  - Subscription management`);
-      console.log(`   ✅ /api/distributors   - Distributor management`);
-      console.log(`   ✅ /api/returns        - Return management`);
-      console.log(`   ✅ /api/apartments     - Apartment residents & orders (NEW!)`);
-      console.log(`\n⚙️  Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`   ✅ GET  /              - API info`);
+      console.log(`   ✅ GET  /health        - Health check`);
+      console.log(`   ✅ POST /api/users     - User routes`);
+      console.log(`   ✅ POST /api/orders    - Order routes (CRITICAL!)`);
+      console.log(`   ✅ GET  /api/apartments/:id/residents - Get residents with orders`);
+      console.log(`   ✅ PUT  /api/can-status - Can status routes`);
+      console.log(`   ✅ POST /api/subscriptions - Subscription routes`);
+      console.log(`   ✅ POST /api/distributors - Distributor routes`);
+      console.log(`   ✅ POST /api/returns   - Return routes`);
+      console.log(`\n⚙️  Environment: ${process.env.NODE_ENV || 'production'}`);
+      console.log(`⚙️  Database: ${pool ? 'Connected' : 'Disconnected'}`);
       console.log(`${'='.repeat(60)}\n`);
     });
   } catch (error) {
@@ -131,6 +168,16 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
   console.log('\n👋 SIGINT received. Shutting down gracefully...');
   process.exit(0);
+});
+
+// Handle uncaught errors
+process.on('uncaughtException', (error) => {
+  console.error('❌ Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 // Start the server
