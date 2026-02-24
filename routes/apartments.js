@@ -1,3 +1,7 @@
+// =====================================================
+// APARTMENTS API ROUTE - NEW BACKEND ENDPOINT
+// =====================================================
+
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
@@ -27,7 +31,7 @@ router.get('/:apartmentId/residents', async (req, res) => {
       cycleEnd = new Date(now.getFullYear(), now.getMonth(), lastDay);
     }
     
-    // Query to get residents with their order totals
+    // ✅ CRITICAL QUERY: Gets residents with TOTAL cans including additional!
     const query = `
       SELECT 
         u.id,
@@ -61,6 +65,11 @@ router.get('/:apartmentId/residents', async (req, res) => {
     
     console.log(`✅ Found ${result.rows.length} residents`);
     
+    // Log details for debugging
+    result.rows.forEach(row => {
+      console.log(`   User ${row.id}: ${row.total_cans_cycle} cans`);
+    });
+    
     res.json({
       success: true,
       cycleStart: cycleStart.toISOString(),
@@ -84,7 +93,8 @@ router.get('/:apartmentId/residents', async (req, res) => {
     console.error('❌ Get apartment residents error:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to get apartment residents' 
+      error: 'Failed to get apartment residents',
+      details: error.message
     });
   }
 });
@@ -94,20 +104,40 @@ router.get('/:apartmentId/residents', async (req, res) => {
 router.get('/:apartmentId/orders', async (req, res) => {
   try {
     const { apartmentId } = req.params;
+    const { startDate, endDate } = req.query;
     
-    const query = `
+    let query = `
       SELECT 
-        o.*,
+        o.id,
+        o.user_id,
+        o.quantity,
+        o.total_amount,
+        o.status,
+        o.created_at,
         u.full_name,
         u.phone
       FROM orders o
       JOIN users u ON o.user_id = u.id
       WHERE u.apartment_id = $1
-      ORDER BY o.created_at DESC
-      LIMIT 100
     `;
     
-    const result = await pool.query(query, [apartmentId]);
+    const params = [apartmentId];
+    
+    if (startDate) {
+      params.push(startDate);
+      query += ` AND o.created_at >= $${params.length}`;
+    }
+    
+    if (endDate) {
+      params.push(endDate);
+      query += ` AND o.created_at <= $${params.length}`;
+    }
+    
+    query += ` ORDER BY o.created_at DESC LIMIT 200`;
+    
+    const result = await pool.query(query, params);
+    
+    console.log(`✅ Found ${result.rows.length} orders for apartment ${apartmentId}`);
     
     res.json({
       success: true,
@@ -119,6 +149,46 @@ router.get('/:apartmentId/orders', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       error: 'Failed to get apartment orders' 
+    });
+  }
+});
+
+// GET /api/distributors/:distributorId/apartments
+// Get all apartments for a distributor
+router.get('/distributor/:distributorId', async (req, res) => {
+  try {
+    const { distributorId } = req.params;
+    
+    const query = `
+      SELECT 
+        id,
+        name,
+        location,
+        price_per_can,
+        join_code,
+        distributor_id,
+        distributor_name,
+        distributor_upi_id,
+        created_at
+      FROM apartment_groups
+      WHERE distributor_id = $1
+      ORDER BY name ASC
+    `;
+    
+    const result = await pool.query(query, [distributorId]);
+    
+    console.log(`✅ Found ${result.rows.length} apartments for distributor ${distributorId}`);
+    
+    res.json({
+      success: true,
+      apartments: result.rows
+    });
+    
+  } catch (error) {
+    console.error('❌ Get distributor apartments error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get apartments' 
     });
   }
 });
