@@ -1,14 +1,38 @@
 const express = require('express');
 const router = express.Router();
-const { query } = require('../config/database');
+const { pool } = require('../db');  // ✅ FIXED: Use pool instead of query
+const jwt = require('jsonwebtoken');  // ✅ ADDED: JWT for authentication
+
+// ✅ ADDED: Authentication middleware
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
+  jwt.verify(
+    token, 
+    process.env.JWT_SECRET || 'watercan-secret-key-2026', 
+    (err, user) => {
+      if (err) {
+        return res.status(403).json({ error: 'Invalid or expired token' });
+      }
+      req.user = user;  // ✅ Sets req.user
+      next();
+    }
+  );
+}
 
 // Create new payment
-router.post('/', async (req, res) => {
+router.post('/', authenticateToken, async (req, res) => {  // ✅ ADDED: authenticateToken
   try {
-    const userId = req.userId;
+    const userId = req.user.userId;  // ✅ FIXED: req.user.userId instead of req.userId
     const { order_id, method, amount, status } = req.body;
 
-    const orderCheck = await query(
+    // ✅ Verify order belongs to user
+    const orderCheck = await pool.query(  // ✅ FIXED: pool.query
       'SELECT * FROM orders WHERE id = $1 AND user_id = $2',
       [order_id, userId]
     );
@@ -17,7 +41,7 @@ router.post('/', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    const result = await query(
+    const result = await pool.query(  // ✅ FIXED: pool.query
       'INSERT INTO payments (order_id, method, amount, status, paid_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP) RETURNING *',
       [order_id, method, amount, status || 'success']
     );
@@ -33,11 +57,11 @@ router.post('/', async (req, res) => {
 });
 
 // Get all payments
-router.get('/', async (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {  // ✅ ADDED: authenticateToken
   try {
-    const userId = req.userId;
+    const userId = req.user.userId;  // ✅ FIXED
 
-    const result = await query(
+    const result = await pool.query(  // ✅ FIXED
       `SELECT p.*, o.total_amount as order_amount, o.status as order_status 
        FROM payments p 
        JOIN orders o ON p.order_id = o.id 
@@ -54,12 +78,12 @@ router.get('/', async (req, res) => {
 });
 
 // Get specific payment
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticateToken, async (req, res) => {  // ✅ ADDED: authenticateToken
   try {
-    const userId = req.userId;
+    const userId = req.user.userId;  // ✅ FIXED
     const paymentId = req.params.id;
 
-    const result = await query(
+    const result = await pool.query(  // ✅ FIXED
       `SELECT p.*, o.user_id, o.total_amount as order_amount, o.status as order_status 
        FROM payments p 
        JOIN orders o ON p.order_id = o.id 
@@ -79,12 +103,13 @@ router.get('/:id', async (req, res) => {
 });
 
 // Get payments for order
-router.get('/order/:orderId', async (req, res) => {
+router.get('/order/:orderId', authenticateToken, async (req, res) => {  // ✅ ADDED: authenticateToken
   try {
-    const userId = req.userId;
+    const userId = req.user.userId;  // ✅ FIXED
     const orderId = req.params.orderId;
 
-    const orderCheck = await query(
+    // ✅ Verify order belongs to user
+    const orderCheck = await pool.query(  // ✅ FIXED
       'SELECT * FROM orders WHERE id = $1 AND user_id = $2',
       [orderId, userId]
     );
@@ -93,7 +118,7 @@ router.get('/order/:orderId', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    const result = await query(
+    const result = await pool.query(  // ✅ FIXED
       'SELECT * FROM payments WHERE order_id = $1 ORDER BY paid_at DESC',
       [orderId]
     );
@@ -106,13 +131,13 @@ router.get('/order/:orderId', async (req, res) => {
 });
 
 // Update payment status
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticateToken, async (req, res) => {  // ✅ ADDED: authenticateToken
   try {
-    const userId = req.userId;
+    const userId = req.user.userId;  // ✅ FIXED
     const paymentId = req.params.id;
     const { status } = req.body;
 
-    const result = await query(
+    const result = await pool.query(  // ✅ FIXED
       `UPDATE payments p
        SET status = $1
        FROM orders o
