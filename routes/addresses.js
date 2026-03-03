@@ -1,37 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const { pool } = require('../db');  // ✅ FIXED: Use pool instead of query
-const jwt = require('jsonwebtoken');  // ✅ ADDED: JWT for authentication
-
-// ✅ ADDED: Authentication middleware
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({ error: 'Access token required' });
-  }
-
-  jwt.verify(
-    token, 
-    process.env.JWT_SECRET || 'watercan-secret-key-2026', 
-    (err, user) => {
-      if (err) {
-        return res.status(403).json({ error: 'Invalid or expired token' });
-      }
-      req.user = user;  // ✅ Sets req.user
-      next();
-    }
-  );
-}
+const { query } = require('../config/database');
 
 // Create new address
-router.post('/', authenticateToken, async (req, res) => {  // ✅ ADDED: authenticateToken
+router.post('/', async (req, res) => {
   try {
-    const userId = req.user.userId;  // ✅ FIXED: req.user.userId instead of req.userId
+    const userId = req.userId;
     const { address_line, latitude, longitude } = req.body;
 
-    const result = await pool.query(  // ✅ FIXED: pool.query instead of query
+    const result = await query(
       'INSERT INTO addresses (user_id, address_line, latitude, longitude, created_at) VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP) RETURNING *',
       [userId, address_line, latitude, longitude]
     );
@@ -47,11 +24,11 @@ router.post('/', authenticateToken, async (req, res) => {  // ✅ ADDED: authent
 });
 
 // Get all addresses
-router.get('/', authenticateToken, async (req, res) => {  // ✅ ADDED: authenticateToken
+router.get('/', async (req, res) => {
   try {
-    const userId = req.user.userId;  // ✅ FIXED
+    const userId = req.userId;
 
-    const result = await pool.query(  // ✅ FIXED
+    const result = await query(
       'SELECT * FROM addresses WHERE user_id = $1 ORDER BY created_at DESC',
       [userId]
     );
@@ -64,12 +41,12 @@ router.get('/', authenticateToken, async (req, res) => {  // ✅ ADDED: authenti
 });
 
 // Get specific address
-router.get('/:id', authenticateToken, async (req, res) => {  // ✅ ADDED: authenticateToken
+router.get('/:id', async (req, res) => {
   try {
-    const userId = req.user.userId;  // ✅ FIXED
+    const userId = req.userId;
     const addressId = req.params.id;
 
-    const result = await pool.query(  // ✅ FIXED
+    const result = await query(
       'SELECT * FROM addresses WHERE id = $1 AND user_id = $2',
       [addressId, userId]
     );
@@ -86,13 +63,13 @@ router.get('/:id', authenticateToken, async (req, res) => {  // ✅ ADDED: authe
 });
 
 // Update address
-router.put('/:id', authenticateToken, async (req, res) => {  // ✅ ADDED: authenticateToken
+router.put('/:id', async (req, res) => {
   try {
-    const userId = req.user.userId;  // ✅ FIXED
+    const userId = req.userId;
     const addressId = req.params.id;
     const { address_line, latitude, longitude } = req.body;
 
-    const result = await pool.query(  // ✅ FIXED
+    const result = await query(
       'UPDATE addresses SET address_line = $1, latitude = $2, longitude = $3 WHERE id = $4 AND user_id = $5 RETURNING *',
       [address_line, latitude, longitude, addressId, userId]
     );
@@ -112,12 +89,12 @@ router.put('/:id', authenticateToken, async (req, res) => {  // ✅ ADDED: authe
 });
 
 // Delete address
-router.delete('/:id', authenticateToken, async (req, res) => {  // ✅ ADDED: authenticateToken
+router.delete('/:id', async (req, res) => {
   try {
-    const userId = req.user.userId;  // ✅ FIXED
+    const userId = req.userId;
     const addressId = req.params.id;
 
-    const result = await pool.query(  // ✅ FIXED
+    const result = await query(
       'DELETE FROM addresses WHERE id = $1 AND user_id = $2 RETURNING *',
       [addressId, userId]
     );
