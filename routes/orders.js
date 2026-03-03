@@ -19,25 +19,23 @@ function authenticateToken(req, res, next) {
       if (err) {
         return res.status(403).json({ error: 'Invalid or expired token' });
       }
-      req.user = user;
+      req.user = user; // ✅ Sets req.user (not req.userId)
       next();
     }
   );
 }
 
 // POST /api/orders - Create new order
-// ✅ NOW TRACKS IF ORDER IS ADDITIONAL CAN REQUEST
 router.post('/', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
-    const { address_id, quantity, total_amount, status, is_additional } = req.body;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
+    const { address_id, quantity, total_amount, status } = req.body;
 
     console.log(`📤 Creating order for user ${userId}:`, {
       address_id,
       quantity,
       total_amount,
-      status: status || 'pending',
-      is_additional: is_additional || false  // ✅ NEW
+      status: status || 'pending'
     });
 
     // Validate required fields
@@ -54,13 +52,6 @@ router.post('/', authenticateToken, async (req, res) => {
       });
     }
 
-    // ✅ NEW: Validate max 3 additional cans
-    if (is_additional && quantity > 3) {
-      return res.status(400).json({ 
-        error: 'Maximum 3 additional cans allowed per request' 
-      });
-    }
-
     // Validate total_amount
     if (total_amount <= 0) {
       return res.status(400).json({ 
@@ -68,30 +59,15 @@ router.post('/', authenticateToken, async (req, res) => {
       });
     }
 
-    // ✅ UPDATED: Create the order with is_additional flag
+    // Create the order
     const result = await pool.query(
-      `INSERT INTO orders (
-        user_id, 
-        address_id, 
-        quantity, 
-        total_amount, 
-        status, 
-        is_additional,
-        created_at
-      ) 
-       VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP) 
+      `INSERT INTO orders (user_id, address_id, quantity, total_amount, status, created_at) 
+       VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP) 
        RETURNING *`,
-      [
-        userId, 
-        address_id, 
-        quantity, 
-        total_amount, 
-        status || 'pending',
-        is_additional || false  // ✅ NEW COLUMN
-      ]
+      [userId, address_id, quantity, total_amount, status || 'pending']
     );
 
-    console.log(`✅ Order created: ID ${result.rows[0].id}${is_additional ? ' (ADDITIONAL CANS)' : ''}`);
+    console.log(`✅ Order created successfully: ID ${result.rows[0].id}`);
 
     res.status(201).json({
       message: 'Order created successfully',
@@ -107,16 +83,12 @@ router.post('/', authenticateToken, async (req, res) => {
 // GET /api/orders - Get all orders for user
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
 
     console.log(`📤 Getting orders for user ${userId}`);
 
     const result = await pool.query(
-      `SELECT 
-        o.*, 
-        a.address_line, 
-        a.latitude, 
-        a.longitude 
+      `SELECT o.*, a.address_line, a.latitude, a.longitude 
        FROM orders o 
        LEFT JOIN addresses a ON o.address_id = a.id 
        WHERE o.user_id = $1 
@@ -134,70 +106,10 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
-// ✅ NEW: Get additional can orders only
-router.get('/additional', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.userId;
-
-    console.log(`📤 Getting additional can orders for user ${userId}`);
-
-    const result = await pool.query(
-      `SELECT 
-        o.*, 
-        a.address_line, 
-        a.latitude, 
-        a.longitude 
-       FROM orders o 
-       LEFT JOIN addresses a ON o.address_id = a.id 
-       WHERE o.user_id = $1 AND o.is_additional = true
-       ORDER BY o.created_at DESC`,
-      [userId]
-    );
-
-    console.log(`✅ Found ${result.rows.length} additional can orders`);
-
-    res.json({ orders: result.rows });
-
-  } catch (error) {
-    console.error('❌ Get additional orders error:', error);
-    res.status(500).json({ error: 'Failed to get additional orders' });
-  }
-});
-
-// ✅ NEW: Get subscription orders only (non-additional)
-router.get('/subscription', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.userId;
-
-    console.log(`📤 Getting subscription orders for user ${userId}`);
-
-    const result = await pool.query(
-      `SELECT 
-        o.*, 
-        a.address_line, 
-        a.latitude, 
-        a.longitude 
-       FROM orders o 
-       LEFT JOIN addresses a ON o.address_id = a.id 
-       WHERE o.user_id = $1 AND (o.is_additional = false OR o.is_additional IS NULL)
-       ORDER BY o.created_at DESC`,
-      [userId]
-    );
-
-    console.log(`✅ Found ${result.rows.length} subscription orders`);
-
-    res.json({ orders: result.rows });
-
-  } catch (error) {
-    console.error('❌ Get subscription orders error:', error);
-    res.status(500).json({ error: 'Failed to get subscription orders' });
-  }
-});
-
 // GET /api/orders/:id - Get specific order
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
     const orderId = req.params.id;
 
     console.log(`📤 Getting order ${orderId} for user ${userId}`);
@@ -227,12 +139,13 @@ router.get('/:id', authenticateToken, async (req, res) => {
 // PUT /api/orders/:id - Update order
 router.put('/:id', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
     const orderId = req.params.id;
     const { address_id, quantity, total_amount, status } = req.body;
 
     console.log(`📤 Updating order ${orderId} for user ${userId}`);
 
+    // Validate at least one field to update
     if (!address_id && !quantity && !total_amount && !status) {
       return res.status(400).json({ 
         error: 'At least one field must be provided to update' 
@@ -267,7 +180,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
 // PATCH /api/orders/:id/status - Update order status only
 router.patch('/:id/status', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
     const orderId = req.params.id;
     const { status } = req.body;
 
@@ -277,6 +190,7 @@ router.patch('/:id/status', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Status is required' });
     }
 
+    // Validate status values
     const validStatuses = ['pending', 'confirmed', 'delivered', 'cancelled', 'completed'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ 
@@ -312,7 +226,7 @@ router.patch('/:id/status', authenticateToken, async (req, res) => {
 // DELETE /api/orders/:id - Delete order
 router.delete('/:id', authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.userId;
+    const userId = req.user.userId; // ✅ FIXED: Use req.user.userId
     const orderId = req.params.id;
 
     console.log(`📤 Deleting order ${orderId} for user ${userId}`);

@@ -1,5 +1,5 @@
 // =====================================================
-// WATERCAN BACKEND - ZERO ERRORS v3.0.0
+// WATERCAN BACKEND - COMPLETE SERVER
 // =====================================================
 require('dotenv').config();
 const express = require('express');
@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 // =====================================================
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
@@ -26,129 +26,68 @@ app.use((req, res, next) => {
 });
 
 // =====================================================
-// HEALTH ENDPOINTS - CATCH ALL VARIATIONS
+// ROUTES
 // =====================================================
 
-// Catch malformed health check URLs
-app.all(/\/health.*/, async (req, res) => {
-  try {
-    const dbCheck = await pool.query('SELECT NOW()');
-    
-    res.status(200).json({ 
-      status: 'ok',
-      service: 'watercan-backend',
-      version: '3.0.0',
-      timestamp: new Date().toISOString(),
-      database: 'connected',
-      uptime: Math.floor(process.uptime()),
-      dbTime: dbCheck.rows[0].now,
-      requestPath: req.path
-    });
-  } catch (error) {
-    res.status(200).json({
-      status: 'ok',
-      service: 'watercan-backend',
-      timestamp: new Date().toISOString(),
-      database: 'error',
-      error: error.message,
-      requestPath: req.path
-    });
-  }
-});
-
-// Root endpoint
+// Health check
 app.get('/', (req, res) => {
   res.json({
     message: 'WaterCan Backend API',
     status: 'running',
-    version: '3.0.0',
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      health: '/health',
-      users: '/api/users',
-      orders: '/api/orders',
-      apartments: '/api/apartments',
-      distributors: '/api/distributors',
-      canStatus: '/api/can-status',
-      subscriptions: '/api/subscriptions',
-      returns: '/api/returns'
-    }
+    version: '2.0.0',
+    timestamp: new Date().toISOString()
   });
 });
 
-// HEAD request for root
-app.head('/', (req, res) => {
-  res.status(200).end();
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    database: pool ? 'connected' : 'disconnected'
+  });
 });
 
-// =====================================================
-// API ROUTES
-// =====================================================
-
+// ✅ CRITICAL: Import ALL route modules
 const userRoutes = require('./routes/users');
 const distributorRoutes = require('./routes/distributors');
 const returnRoutes = require('./routes/returns');
-const orderRoutes = require('./routes/orders');
-const canStatusRoutes = require('./routes/canstatus');
-const subscriptionRoutes = require('./routes/subscriptions');
-const apartmentRoutes = require('./routes/apartments');
+const orderRoutes = require('./routes/orders');  // ← CRITICAL: ADD THIS!
+const canStatusRoutes = require('./routes/canstatus');  // ← ADD THIS!
+const subscriptionRoutes = require('./routes/subscriptions');  // ← ADD THIS!
 
+// ✅ CRITICAL: Mount ALL routes
 app.use('/api/users', userRoutes);
 app.use('/api/distributors', distributorRoutes);
 app.use('/api/returns', returnRoutes);
-app.use('/api/orders', orderRoutes);
-app.use('/api/can-status', canStatusRoutes);
-app.use('/api/subscriptions', subscriptionRoutes);
-app.use('/api/apartments', apartmentRoutes);
+app.use('/api/orders', orderRoutes);  // ← CRITICAL: ADD THIS!
+app.use('/api/can-status', canStatusRoutes);  // ← ADD THIS!
+app.use('/api/subscriptions', subscriptionRoutes);  // ← ADD THIS!
 
 // =====================================================
-// CATCH-ALL 404 HANDLER - RETURNS 200 TO PREVENT ERRORS
+// ERROR HANDLING
 // =====================================================
 
-app.all('*', (req, res) => {
-  // Log but return 200 to prevent error logs
-  console.log(`ℹ️  Unmatched route: ${req.method} ${req.path}`);
-  res.status(200).json({ 
-    message: 'WaterCan API',
-    status: 'ok',
-    note: 'Route not configured',
-    requestedPath: req.path,
-    requestedMethod: req.method,
-    availableEndpoints: [
-      'GET /',
-      'GET /health',
-      'POST /api/users/send-otp',
-      'POST /api/users/verify-otp',
-      'GET /api/users/profile',
-      'POST /api/orders',
-      'GET /api/orders',
-      'GET /api/apartments/:id/residents',
-      'PUT /api/can-status',
-      'GET /api/can-status',
-      'POST /api/distributors/send-otp',
-      'POST /api/distributors/verify-otp',
-      'GET /api/distributors/profile',
-      'POST /api/returns/create',
-      'GET /api/subscriptions/active'
-    ]
+// 404 handler
+app.use((req, res) => {
+  console.log(`❌ 404 - Route not found: ${req.method} ${req.path}`);
+  res.status(404).json({ 
+    error: 'Route not found',
+    path: req.path,
+    method: req.method
   });
 });
 
-// =====================================================
-// ERROR HANDLER
-// =====================================================
-
+// Global error handler
 app.use((err, req, res, next) => {
-  console.error('⚠️  Error:', err.message);
-  res.status(200).json({
-    status: 'ok',
-    message: 'Request processed',
-    note: err.message
+  console.error('❌ Error:', err);
+  res.status(err.status || 500).json({
+    error: err.message || 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
   });
 });
 
 // =====================================================
-// SERVER START
+// DATABASE INITIALIZATION & SERVER START
 // =====================================================
 
 async function startServer() {
@@ -158,16 +97,21 @@ async function startServer() {
     console.log('✅ Database initialized');
     
     app.listen(PORT, () => {
-      console.log(`\n${'='.repeat(60)}`);
-      console.log(`🚀 WaterCan Server - ZERO ERRORS v3.0.0`);
-      console.log(`${'='.repeat(60)}`);
-      console.log(`📍 URL: https://watercan-backend-gdkp.onrender.com`);
-      console.log(`📍 Health: https://watercan-backend-gdkp.onrender.com/health`);
-      console.log(`📍 API: https://watercan-backend-gdkp.onrender.com/api`);
-      console.log(`\n✅ All routes mounted and ready`);
-      console.log(`✅ Database connected`);
-      console.log(`✅ Zero-error mode enabled`);
-      console.log(`${'='.repeat(60)}\n`);
+      console.log(`\n${'='.repeat(50)}`);
+      console.log(`🚀 WaterCan Server Running`);
+      console.log(`${'='.repeat(50)}`);
+      console.log(`📍 Port: ${PORT}`);
+      console.log(`📍 Health: http://localhost:${PORT}/health`);
+      console.log(`📍 API Base: http://localhost:${PORT}/api`);
+      console.log(`\n📋 Mounted Routes:`);
+      console.log(`   ✅ /api/users          - User authentication & profile`);
+      console.log(`   ✅ /api/orders         - Order management (CRITICAL!)`);
+      console.log(`   ✅ /api/can-status     - Can status tracking`);
+      console.log(`   ✅ /api/subscriptions  - Subscription management`);
+      console.log(`   ✅ /api/distributors   - Distributor management`);
+      console.log(`   ✅ /api/returns        - Return management`);
+      console.log(`\n⚙️  Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`${'='.repeat(50)}\n`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
@@ -175,24 +119,18 @@ async function startServer() {
   }
 }
 
+// Handle graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('\n👋 Shutting down gracefully...');
+  console.log('\n👋 SIGTERM received. Shutting down gracefully...');
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
-  console.log('\n👋 Shutting down gracefully...');
+  console.log('\n👋 SIGINT received. Shutting down gracefully...');
   process.exit(0);
 });
 
-process.on('uncaughtException', (error) => {
-  console.error('⚠️  Exception:', error.message);
-});
-
-process.on('unhandledRejection', (reason) => {
-  console.error('⚠️  Rejection:', reason);
-});
-
+// Start the server
 startServer();
 
 module.exports = app;

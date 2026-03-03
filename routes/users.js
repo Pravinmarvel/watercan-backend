@@ -124,10 +124,7 @@ router.post('/verify-otp', async (req, res) => {
   }
 });
 
-// =====================================================
-// AUTHENTICATION MIDDLEWARE
-// =====================================================
-
+// Authentication middleware
 function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
@@ -149,31 +146,10 @@ function authenticateToken(req, res, next) {
   );
 }
 
-function authenticateAny(req, res, next) {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({ error: 'Access token required' });
-  }
-
-  jwt.verify(
-    token, 
-    process.env.JWT_SECRET || 'watercan-secret-key-2026', 
-    (err, decoded) => {
-      if (err) {
-        return res.status(403).json({ error: 'Invalid or expired token' });
-      }
-      req.user = decoded;
-      next();
-    }
-  );
-}
-
 // GET /api/users/profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const query = 'SELECT id, phone, full_name, apartment_id, created_at FROM users WHERE id = $1';
+    const query = 'SELECT id, phone, full_name, created_at FROM users WHERE id = $1';
     const result = await pool.query(query, [req.user.userId]);
 
     if (result.rows.length === 0) {
@@ -185,7 +161,6 @@ router.get('/profile', authenticateToken, async (req, res) => {
         id: result.rows[0].id,
         phone: result.rows[0].phone,
         fullName: result.rows[0].full_name,
-        apartmentId: result.rows[0].apartment_id,
         createdAt: result.rows[0].created_at
       }
     });
@@ -389,57 +364,6 @@ router.put('/can-status', authenticateToken, async (req, res) => {
   }
 });
 
-// PUT /api/users/:userId/can-status - Allows distributors to update user can status
-router.put('/:userId/can-status', authenticateAny, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { can_1_full, can_2_full, can_3_full } = req.body;
-    
-    console.log(`📤 Updating can status for user ${userId}`);
-
-    const isDistributor = req.user.distributorId !== undefined;
-    const isOwnUser = req.user.userId == userId;
-
-    if (!isDistributor && !isOwnUser) {
-      return res.status(403).json({ error: 'Not authorized to update this user' });
-    }
-
-    if (
-      typeof can_1_full !== 'boolean' || 
-      typeof can_2_full !== 'boolean' || 
-      typeof can_3_full !== 'boolean'
-    ) {
-      return res.status(400).json({ 
-        error: 'All can status values must be boolean' 
-      });
-    }
-
-    const result = await pool.query(
-      `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, updated_at)
-       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-       ON CONFLICT (user_id) 
-       DO UPDATE SET 
-         can_1_full = $2, 
-         can_2_full = $3, 
-         can_3_full = $4, 
-         updated_at = CURRENT_TIMESTAMP
-       RETURNING *`,
-      [userId, can_1_full, can_2_full, can_3_full]
-    );
-
-    console.log(`✅ Can status updated for user ${userId}`);
-
-    res.json({ 
-      message: 'Can status updated successfully',
-      canStatus: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('❌ Error updating can status:', error);
-    res.status(500).json({ error: 'Failed to update can status' });
-  }
-});
-
 // ========================================
 // APARTMENT ENDPOINTS
 // ========================================
@@ -574,43 +498,6 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('❌ Get user apartment error:', error);
     res.status(500).json({ error: 'Failed to get apartment details' });
-  }
-});
-
-// POST /api/users/:userId/returns - Create return request
-router.post('/:userId/returns', authenticateToken, async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { quantity, pickup_address, pickup_date, instructions, status, cans_selected } = req.body;
-
-    if (req.user.userId !== parseInt(userId)) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
-
-    if (!quantity || quantity < 1 || quantity > 3) {
-      return res.status(400).json({ error: 'Quantity must be between 1 and 3' });
-    }
-
-    if (!pickup_address || !pickup_date) {
-      return res.status(400).json({ error: 'Pickup address and date are required' });
-    }
-
-    const result = await pool.query(
-      `INSERT INTO can_returns (
-        user_id, quantity, pickup_address, pickup_date, instructions, status, cans_selected
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [userId, quantity, pickup_address, pickup_date, instructions || null, status || 'pending', cans_selected ? JSON.stringify(cans_selected) : null]
-    );
-
-    console.log(`✅ Return request created for user ${userId}`);
-
-    res.status(201).json({
-      message: 'Return request created successfully',
-      return: result.rows[0]
-    });
-  } catch (error) {
-    console.error('❌ Create return error:', error);
-    res.status(500).json({ error: 'Failed to create return request' });
   }
 });
 

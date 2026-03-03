@@ -1,354 +1,195 @@
+// =====================================================
+// APARTMENTS API ROUTE - NEW BACKEND ENDPOINT
+// =====================================================
+
 const express = require('express');
 const router = express.Router();
-const pool = require('../db');
-const { authenticateDistributor } = require('../middleware/auth');
+const { pool } = require('../db');
 
-// ========================================
-// GET ALL APARTMENTS FOR A DISTRIBUTOR
-// ========================================
-router.get('/distributor/:distributorId', async (req, res) => {
+// GET /api/apartments/:apartmentId/residents
+// Returns all residents with their order totals for current cycle
+router.get('/:apartmentId/residents', async (req, res) => {
   try {
-    const { distributorId } = req.params;
-
-    console.log(`📥 Getting apartments for distributor ${distributorId}`);
-
-    const result = await pool.query(
-      `SELECT id, name, location, price_per_can, join_code, created_at 
-       FROM apartments 
-       WHERE distributor_id = $1 
-       ORDER BY created_at DESC`,
-      [distributorId]
-    );
-
-    console.log(`✅ Found ${result.rows.length} apartments`);
-
-    res.json({
-      apartments: result.rows.map(apt => ({
-        id: apt.id,
-        name: apt.name,
-        location: apt.location,
-        price_per_can: apt.price_per_can,
-        join_code: apt.join_code,
-        created_at: apt.created_at
-      }))
-    });
-
-  } catch (error) {
-    console.error('❌ Error getting apartments:', error);
-    res.status(500).json({ error: 'Failed to get apartments' });
-  }
-});
-
-// ========================================
-// GET RESIDENTS OF AN APARTMENT (WITH ADDITIONAL CANS)
-// ========================================
-router.get('/:id/residents', async (req, res) => {
-  try {
-    const apartmentId = parseInt(req.params.id);
-
-    console.log(`📥 Getting residents for apartment ${apartmentId}`);
-
-    // Get all users in this apartment
-    const usersResult = await pool.query(
-      `SELECT id, full_name, phone, address 
-       FROM users 
-       WHERE apartment_id = $1 
-       ORDER BY full_name`,
-      [apartmentId]
-    );
-
-    console.log(`✅ Found ${usersResult.rows.length} users in apartment`);
-
-    if (usersResult.rows.length === 0) {
-      return res.json({ residents: [] });
-    }
-
-    // ✅ Calculate current cycle dates
+    const { apartmentId } = req.params;
+    
+    console.log(`📤 Getting residents for apartment ${apartmentId}`);
+    
+    // Get current 10-day cycle dates
     const now = new Date();
     const day = now.getDate();
     let cycleStart, cycleEnd;
-
+    
     if (day <= 10) {
-      // Cycle 1: 1st - 10th
       cycleStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 10, 23, 59, 59);
+      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 10);
     } else if (day <= 20) {
-      // Cycle 2: 11th - 20th
       cycleStart = new Date(now.getFullYear(), now.getMonth(), 11);
-      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 20, 23, 59, 59);
+      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 20);
     } else {
-      // Cycle 3: 21st - end of month
       cycleStart = new Date(now.getFullYear(), now.getMonth(), 21);
-      const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-      cycleEnd = new Date(now.getFullYear(), now.getMonth(), daysInMonth, 23, 59, 59);
+      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+      cycleEnd = new Date(now.getFullYear(), now.getMonth(), lastDay);
     }
-
-    console.log(`📅 Current cycle: ${cycleStart.toISOString()} to ${cycleEnd.toISOString()}`);
-
-    const residents = [];
-
-    for (const user of usersResult.rows) {
-      // ✅ Get can status
-      const canStatusResult = await pool.query(
-        `SELECT can_1_full, can_2_full, can_3_full, updated_at 
-         FROM can_status 
-         WHERE user_id = $1`,
-        [user.id]
-      );
-
-      const canStatus = canStatusResult.rows[0] || {
-        can_1_full: true,
-        can_2_full: true,
-        can_3_full: true,
-        updated_at: null
-      };
-
-      // ✅ Count SUBSCRIPTION cans (is_additional = false OR null)
-      const subscriptionResult = await pool.query(
-        `SELECT COUNT(*) as count 
-         FROM orders 
-         WHERE user_id = $1 
-         AND created_at >= $2 
-         AND created_at <= $3 
-         AND (is_additional = false OR is_additional IS NULL)`,
-        [user.id, cycleStart, cycleEnd]
-      );
-
-      const subscriptionCans = parseInt(subscriptionResult.rows[0]?.count || 0);
-
-      // ✅ Count ADDITIONAL cans (is_additional = true)
-      const additionalResult = await pool.query(
-        `SELECT COUNT(*) as count, MAX(created_at) as last_request
-         FROM orders 
-         WHERE user_id = $1 
-         AND created_at >= $2 
-         AND created_at <= $3 
-         AND is_additional = true`,
-        [user.id, cycleStart, cycleEnd]
-      );
-
-      const additionalCans = parseInt(additionalResult.rows[0]?.count || 0);
-      const lastAdditionalRequest = additionalResult.rows[0]?.last_request || null;
-
-      // ✅ Total cans for this cycle
-      const totalCans = subscriptionCans + additionalCans;
-
-      console.log(`   User ${user.id}: ${totalCans} total (${subscriptionCans} sub + ${additionalCans} extra)`);
-
-      residents.push({
-        id: user.id,
-        fullName: user.full_name,
-        phone: user.phone,
-        address: user.address,
-        canStatus: {
-          can1Full: canStatus.can_1_full,
-          can2Full: canStatus.can_2_full,
-          can3Full: canStatus.can_3_full,
-          updatedAt: canStatus.updated_at
-        },
-        totalCansThisCycle: totalCans,
-        subscriptionCans: subscriptionCans,      // ✅ NEW: Subscription cans only
-        additionalCans: additionalCans,          // ✅ NEW: Additional cans only
-        lastAdditionalRequest: lastAdditionalRequest  // ✅ NEW: When last additional was requested
-      });
-    }
-
-    console.log(`✅ Returning ${residents.length} residents with can data`);
-
-    res.json({ residents });
-
-  } catch (error) {
-    console.error('❌ Error fetching residents:', error);
-    res.status(500).json({ error: 'Failed to fetch residents' });
-  }
-});
-
-// ========================================
-// CREATE NEW APARTMENT
-// ========================================
-router.post('/', authenticateDistributor, async (req, res) => {
-  try {
-    const { name, location, price_per_can, join_code } = req.body;
-    const distributorId = req.distributor.distributorId;
-
-    console.log(`📥 Creating apartment for distributor ${distributorId}`);
-
-    // Validate inputs
-    if (!name || !location || !price_per_can || !join_code) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    if (join_code.length !== 4 || !/^\d{4}$/.test(join_code)) {
-      return res.status(400).json({ error: 'Join code must be 4 digits' });
-    }
-
-    // Check if join code already exists
-    const existingCode = await pool.query(
-      'SELECT id FROM apartments WHERE join_code = $1',
-      [join_code]
-    );
-
-    if (existingCode.rows.length > 0) {
-      return res.status(400).json({ error: 'Join code already exists' });
-    }
-
-    // Create apartment
-    const result = await pool.query(
-      `INSERT INTO apartments (distributor_id, name, location, price_per_can, join_code) 
-       VALUES ($1, $2, $3, $4, $5) 
-       RETURNING *`,
-      [distributorId, name, location, price_per_can, join_code]
-    );
-
-    console.log(`✅ Apartment created with ID ${result.rows[0].id}`);
-
-    res.status(201).json({
-      apartment: result.rows[0]
+    
+    // ✅ CRITICAL QUERY: Gets residents with TOTAL cans including additional!
+    const query = `
+      SELECT 
+        u.id,
+        u.phone,
+        u.full_name,
+        u.apartment_id,
+        a.address_line,
+        cs.can_1_full,
+        cs.can_2_full,
+        cs.can_3_full,
+        cs.updated_at as can_status_updated,
+        COALESCE(SUM(o.quantity), 0) as total_cans_cycle
+      FROM users u
+      LEFT JOIN addresses a ON a.user_id = u.id
+      LEFT JOIN can_status cs ON cs.user_id = u.id
+      LEFT JOIN orders o ON o.user_id = u.id 
+        AND o.created_at >= $2 
+        AND o.created_at <= $3
+      WHERE u.apartment_id = $1
+      GROUP BY u.id, u.phone, u.full_name, u.apartment_id, 
+               a.address_line, cs.can_1_full, cs.can_2_full, 
+               cs.can_3_full, cs.updated_at
+      ORDER BY u.full_name ASC
+    `;
+    
+    const result = await pool.query(query, [
+      apartmentId,
+      cycleStart.toISOString(),
+      cycleEnd.toISOString()
+    ]);
+    
+    console.log(`✅ Found ${result.rows.length} residents`);
+    
+    // Log details for debugging
+    result.rows.forEach(row => {
+      console.log(`   User ${row.id}: ${row.total_cans_cycle} cans`);
     });
-
-  } catch (error) {
-    console.error('❌ Error creating apartment:', error);
-    res.status(500).json({ error: 'Failed to create apartment' });
-  }
-});
-
-// ========================================
-// UPDATE APARTMENT PRICE
-// ========================================
-router.put('/:id', authenticateDistributor, async (req, res) => {
-  try {
-    const apartmentId = parseInt(req.params.id);
-    const { price_per_can } = req.body;
-    const distributorId = req.distributor.distributorId;
-
-    console.log(`📥 Updating apartment ${apartmentId} price to ${price_per_can}`);
-
-    // Validate
-    if (!price_per_can || price_per_can <= 0) {
-      return res.status(400).json({ error: 'Invalid price' });
-    }
-
-    // Check ownership
-    const apartmentCheck = await pool.query(
-      'SELECT id FROM apartments WHERE id = $1 AND distributor_id = $2',
-      [apartmentId, distributorId]
-    );
-
-    if (apartmentCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Apartment not found or unauthorized' });
-    }
-
-    // Update price
-    const result = await pool.query(
-      `UPDATE apartments 
-       SET price_per_can = $1, updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $2 
-       RETURNING *`,
-      [price_per_can, apartmentId]
-    );
-
-    console.log(`✅ Apartment ${apartmentId} price updated to ${price_per_can}`);
-
-    res.json({
-      apartment: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('❌ Error updating apartment:', error);
-    res.status(500).json({ error: 'Failed to update apartment' });
-  }
-});
-
-// ========================================
-// DELETE APARTMENT
-// ========================================
-router.delete('/:id', authenticateDistributor, async (req, res) => {
-  try {
-    const apartmentId = parseInt(req.params.id);
-    const distributorId = req.distributor.distributorId;
-
-    console.log(`📥 Deleting apartment ${apartmentId}`);
-
-    // Check ownership
-    const apartmentCheck = await pool.query(
-      'SELECT id FROM apartments WHERE id = $1 AND distributor_id = $2',
-      [apartmentId, distributorId]
-    );
-
-    if (apartmentCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'Apartment not found or unauthorized' });
-    }
-
-    // Check if there are users
-    const usersCheck = await pool.query(
-      'SELECT COUNT(*) as count FROM users WHERE apartment_id = $1',
-      [apartmentId]
-    );
-
-    if (parseInt(usersCheck.rows[0].count) > 0) {
-      return res.status(400).json({ 
-        error: 'Cannot delete apartment with active users' 
-      });
-    }
-
-    // Delete apartment
-    await pool.query('DELETE FROM apartments WHERE id = $1', [apartmentId]);
-
-    console.log(`✅ Apartment ${apartmentId} deleted`);
-
-    res.json({ 
-      success: true, 
-      message: 'Apartment deleted successfully' 
-    });
-
-  } catch (error) {
-    console.error('❌ Error deleting apartment:', error);
-    res.status(500).json({ error: 'Failed to delete apartment' });
-  }
-});
-
-// ========================================
-// JOIN APARTMENT (FOR USERS)
-// ========================================
-router.post('/join', async (req, res) => {
-  try {
-    const { join_code, user_id } = req.body;
-
-    console.log(`📥 User ${user_id} joining apartment with code ${join_code}`);
-
-    // Validate
-    if (!join_code || !user_id) {
-      return res.status(400).json({ error: 'Missing join code or user ID' });
-    }
-
-    // Find apartment by join code
-    const apartmentResult = await pool.query(
-      'SELECT id, name, location, price_per_can FROM apartments WHERE join_code = $1',
-      [join_code]
-    );
-
-    if (apartmentResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Invalid join code' });
-    }
-
-    const apartment = apartmentResult.rows[0];
-
-    // Update user's apartment
-    await pool.query(
-      'UPDATE users SET apartment_id = $1 WHERE id = $2',
-      [apartment.id, user_id]
-    );
-
-    console.log(`✅ User ${user_id} joined apartment ${apartment.id}`);
-
+    
     res.json({
       success: true,
-      apartment: apartment
+      cycleStart: cycleStart.toISOString(),
+      cycleEnd: cycleEnd.toISOString(),
+      residents: result.rows.map(row => ({
+        id: row.id,
+        phone: row.phone,
+        fullName: row.full_name,
+        address: row.address_line,
+        canStatus: {
+          can1Full: row.can_1_full,
+          can2Full: row.can_2_full,
+          can3Full: row.can_3_full,
+          updatedAt: row.can_status_updated
+        },
+        totalCansThisCycle: parseInt(row.total_cans_cycle)
+      }))
     });
-
+    
   } catch (error) {
-    console.error('❌ Error joining apartment:', error);
-    res.status(500).json({ error: 'Failed to join apartment' });
+    console.error('❌ Get apartment residents error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get apartment residents',
+      details: error.message
+    });
+  }
+});
+
+// GET /api/apartments/:apartmentId/orders
+// Get all orders for an apartment (for debugging)
+router.get('/:apartmentId/orders', async (req, res) => {
+  try {
+    const { apartmentId } = req.params;
+    const { startDate, endDate } = req.query;
+    
+    let query = `
+      SELECT 
+        o.id,
+        o.user_id,
+        o.quantity,
+        o.total_amount,
+        o.status,
+        o.created_at,
+        u.full_name,
+        u.phone
+      FROM orders o
+      JOIN users u ON o.user_id = u.id
+      WHERE u.apartment_id = $1
+    `;
+    
+    const params = [apartmentId];
+    
+    if (startDate) {
+      params.push(startDate);
+      query += ` AND o.created_at >= $${params.length}`;
+    }
+    
+    if (endDate) {
+      params.push(endDate);
+      query += ` AND o.created_at <= $${params.length}`;
+    }
+    
+    query += ` ORDER BY o.created_at DESC LIMIT 200`;
+    
+    const result = await pool.query(query, params);
+    
+    console.log(`✅ Found ${result.rows.length} orders for apartment ${apartmentId}`);
+    
+    res.json({
+      success: true,
+      orders: result.rows
+    });
+    
+  } catch (error) {
+    console.error('❌ Get apartment orders error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get apartment orders' 
+    });
+  }
+});
+
+// GET /api/distributors/:distributorId/apartments
+// Get all apartments for a distributor
+router.get('/distributor/:distributorId', async (req, res) => {
+  try {
+    const { distributorId } = req.params;
+    
+    const query = `
+      SELECT 
+        id,
+        name,
+        location,
+        price_per_can,
+        join_code,
+        distributor_id,
+        distributor_name,
+        distributor_upi_id,
+        created_at
+      FROM apartment_groups
+      WHERE distributor_id = $1
+      ORDER BY name ASC
+    `;
+    
+    const result = await pool.query(query, [distributorId]);
+    
+    console.log(`✅ Found ${result.rows.length} apartments for distributor ${distributorId}`);
+    
+    res.json({
+      success: true,
+      apartments: result.rows
+    });
+    
+  } catch (error) {
+    console.error('❌ Get distributor apartments error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get apartments' 
+    });
   }
 });
 
