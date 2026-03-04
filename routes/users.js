@@ -149,7 +149,7 @@ function authenticateToken(req, res, next) {
 // GET /api/users/profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const query = 'SELECT id, phone, full_name, created_at FROM users WHERE id = $1';
+    const query = 'SELECT id, phone, full_name, apartment_id, created_at FROM users WHERE id = $1';
     const result = await pool.query(query, [req.user.userId]);
 
     if (result.rows.length === 0) {
@@ -161,6 +161,7 @@ router.get('/profile', authenticateToken, async (req, res) => {
         id: result.rows[0].id,
         phone: result.rows[0].phone,
         fullName: result.rows[0].full_name,
+        apartmentId: result.rows[0].apartment_id,
         createdAt: result.rows[0].created_at
       }
     });
@@ -196,6 +197,37 @@ router.put('/profile', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('❌ Update profile error:', error);
     res.status(500).json({ error: 'Failed to update profile' });
+  }
+});
+
+// ✅ NEW: POST /api/users/fcm-token
+router.post('/fcm-token', authenticateToken, async (req, res) => {
+  try {
+    const { fcm_token } = req.body;
+
+    console.log(`📤 Saving FCM token for user ${req.user.userId}`);
+
+    if (!fcm_token || fcm_token.trim() === '') {
+      return res.status(400).json({ error: 'FCM token is required' });
+    }
+
+    const query = 'UPDATE users SET fcm_token = $1 WHERE id = $2 RETURNING id';
+    const result = await pool.query(query, [fcm_token, req.user.userId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    console.log(`✅ FCM token saved for user ${req.user.userId}`);
+
+    res.json({
+      message: 'FCM token saved successfully',
+      userId: result.rows[0].id
+    });
+
+  } catch (error) {
+    console.error('❌ Save FCM token error:', error);
+    res.status(500).json({ error: 'Failed to save FCM token' });
   }
 });
 
@@ -281,86 +313,6 @@ router.put('/addresses/:id', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('❌ Update address error:', error);
     res.status(500).json({ error: 'Failed to update address' });
-  }
-});
-
-// ========================================
-// CAN STATUS ENDPOINTS
-// ========================================
-
-// GET /api/users/can-status
-router.get('/can-status', authenticateToken, async (req, res) => {
-  try {
-    console.log(`📤 Getting can status for user ${req.user.userId}`);
-    
-    const result = await pool.query(
-      'SELECT * FROM can_status WHERE user_id = $1',
-      [req.user.userId]
-    );
-
-    if (result.rows.length === 0) {
-      console.log(`🆕 Creating default can status for user ${req.user.userId}`);
-      
-      const newStatus = await pool.query(
-        `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, updated_at) 
-         VALUES ($1, true, true, true, CURRENT_TIMESTAMP) 
-         RETURNING *`,
-        [req.user.userId]
-      );
-      
-      console.log(`✅ Default can status created`);
-      return res.json({ canStatus: newStatus.rows[0] });
-    }
-
-    console.log(`✅ Can status found`);
-    res.json({ canStatus: result.rows[0] });
-
-  } catch (error) {
-    console.error('❌ Error getting can status:', error);
-    res.status(500).json({ error: 'Failed to get can status' });
-  }
-});
-
-// PUT /api/users/can-status
-router.put('/can-status', authenticateToken, async (req, res) => {
-  try {
-    const { can_1_full, can_2_full, can_3_full } = req.body;
-    
-    console.log(`📤 Updating can status for user ${req.user.userId}`);
-
-    if (
-      typeof can_1_full !== 'boolean' || 
-      typeof can_2_full !== 'boolean' || 
-      typeof can_3_full !== 'boolean'
-    ) {
-      return res.status(400).json({ 
-        error: 'All can status values must be boolean' 
-      });
-    }
-
-    const result = await pool.query(
-      `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, updated_at)
-       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-       ON CONFLICT (user_id) 
-       DO UPDATE SET 
-         can_1_full = $2, 
-         can_2_full = $3, 
-         can_3_full = $4, 
-         updated_at = CURRENT_TIMESTAMP
-       RETURNING *`,
-      [req.user.userId, can_1_full, can_2_full, can_3_full]
-    );
-
-    console.log(`✅ Can status updated successfully`);
-
-    res.json({ 
-      message: 'Can status updated successfully',
-      canStatus: result.rows[0]
-    });
-
-  } catch (error) {
-    console.error('❌ Error updating can status:', error);
-    res.status(500).json({ error: 'Failed to update can status' });
   }
 });
 
@@ -463,7 +415,7 @@ router.put('/:userId/apartment', authenticateToken, async (req, res) => {
   }
 });
 
-// GET /api/users/:userId/apartment
+// ✅ FIXED: GET /api/users/:userId/apartment - Returns isWorking status
 router.get('/:userId/apartment', authenticateToken, async (req, res) => {
   const { userId } = req.params;
 
@@ -480,10 +432,13 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
         ag.location,
         ag.price_per_can,
         ag.join_code,
+        ag.distributor_id,
         ag.distributor_name,
-        ag.distributor_upi_id
+        ag.distributor_upi_id,
+        d.is_working
       FROM users u
       LEFT JOIN apartment_groups ag ON u.apartment_id = ag.id
+      LEFT JOIN distributors d ON ag.distributor_id = d.id
       WHERE u.id = $1
     `, [userId]);
 
@@ -491,13 +446,58 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    const apartmentData = result.rows[0];
+
     res.json({
       success: true,
-      apartment: result.rows[0]
+      apartment: {
+        apartment_id: apartmentData.apartment_id,
+        apartment_name: apartmentData.apartment_name,
+        location: apartmentData.location,
+        price_per_can: apartmentData.price_per_can,
+        join_code: apartmentData.join_code,
+        distributor_id: apartmentData.distributor_id,
+        distributor_name: apartmentData.distributor_name,
+        distributor_upi_id: apartmentData.distributor_upi_id,
+        isWorking: apartmentData.is_working !== null ? apartmentData.is_working : true
+      }
     });
   } catch (error) {
     console.error('❌ Get user apartment error:', error);
     res.status(500).json({ error: 'Failed to get apartment details' });
+  }
+});
+
+// ✅ NEW: GET /api/users/distributor-upi - For backward compatibility
+router.get('/distributor-upi', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        ag.distributor_id,
+        ag.distributor_name,
+        ag.distributor_upi_id,
+        d.is_working
+      FROM users u
+      LEFT JOIN apartment_groups ag ON u.apartment_id = ag.id
+      LEFT JOIN distributors d ON ag.distributor_id = d.id
+      WHERE u.id = $1
+    `, [req.user.userId]);
+
+    if (result.rows.length === 0 || !result.rows[0].distributor_id) {
+      return res.status(404).json({ error: 'No distributor found for this user' });
+    }
+
+    const data = result.rows[0];
+
+    res.json({
+      distributorId: data.distributor_id,
+      distributorName: data.distributor_name,
+      upiId: data.distributor_upi_id,
+      isWorking: data.is_working !== null ? data.is_working : true
+    });
+  } catch (error) {
+    console.error('❌ Get distributor UPI error:', error);
+    res.status(500).json({ error: 'Failed to get distributor information' });
   }
 });
 
