@@ -139,6 +139,12 @@ router.put('/', authenticateToken, async (req, res) => {
 
     console.log(`✅ Can status updated successfully for user ${userId}`);
 
+    // ✅ NEW: Send notification if cans were filled
+    const wasFilled = can_1_full === true || can_2_full === true || can_3_full === true;
+    if (wasFilled) {
+      await sendCanFilledNotification(userId);
+    }
+
     res.json({ 
       message: 'Can status updated successfully',
       canStatus: result.rows[0]
@@ -159,6 +165,73 @@ router.put('/', authenticateToken, async (req, res) => {
       error: 'Failed to update can status',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
+  }
+});
+
+// =====================================================
+// ✅ NEW: BULK UPDATE CAN STATUS (for distributor)
+// PUT /api/can-status/bulk - Distributor fills multiple cans
+// =====================================================
+router.put('/bulk', authenticateToken, async (req, res) => {
+  try {
+    const { updates } = req.body; // Array of { userId, can_1_full, can_2_full, can_3_full }
+    
+    console.log(`📤 Bulk updating can status for ${updates.length} users`);
+
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return res.status(400).json({ error: 'Updates array is required' });
+    }
+
+    const results = [];
+    const notifications = [];
+
+    for (const update of updates) {
+      const { userId, can_1_full, can_2_full, can_3_full } = update;
+
+      // Validate
+      if (!userId) continue;
+
+      try {
+        // Update can status
+        const result = await pool.query(
+          `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, updated_at)
+           VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+           ON CONFLICT (user_id) 
+           DO UPDATE SET 
+             can_1_full = $2, 
+             can_2_full = $3, 
+             can_3_full = $4, 
+             updated_at = CURRENT_TIMESTAMP
+           RETURNING *`,
+          [userId, can_1_full, can_2_full, can_3_full]
+        );
+
+        results.push(result.rows[0]);
+
+        // Send notification if cans were filled
+        const wasFilled = can_1_full === true || can_2_full === true || can_3_full === true;
+        if (wasFilled) {
+          notifications.push(sendCanFilledNotification(userId));
+        }
+
+      } catch (err) {
+        console.error(`❌ Error updating user ${userId}:`, err);
+      }
+    }
+
+    // Send all notifications
+    await Promise.allSettled(notifications);
+
+    console.log(`✅ Bulk update completed: ${results.length} users updated`);
+
+    res.json({ 
+      message: `Successfully updated ${results.length} can statuses`,
+      updated: results.length
+    });
+
+  } catch (error) {
+    console.error('❌ Bulk update error:', error);
+    res.status(500).json({ error: 'Failed to bulk update can status' });
   }
 });
 
@@ -194,5 +267,52 @@ router.delete('/', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to reset can status' });
   }
 });
+
+// =====================================================
+// ✅ NOTIFICATION HELPER FUNCTION
+// =====================================================
+async function sendCanFilledNotification(userId) {
+  try {
+    // Get user's FCM token
+    const userQuery = await pool.query(
+      'SELECT fcm_token, full_name FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userQuery.rows.length === 0 || !userQuery.rows[0].fcm_token) {
+      console.log(`ℹ️ No FCM token for user ${userId}`);
+      return;
+    }
+
+    const fcmToken = userQuery.rows[0].fcm_token;
+    const userName = userQuery.rows[0].full_name;
+
+    // Send notification via FCM
+    // Note: You'll need to implement FCM sending on your server
+    // This is a placeholder for the notification logic
+    console.log(`📬 Sending notification to ${userName} (User ${userId})`);
+    console.log(`📱 FCM Token: ${fcmToken.substring(0, 20)}...`);
+
+    // TODO: Implement actual FCM notification sending here
+    // Example using Firebase Admin SDK:
+    /*
+    const admin = require('firebase-admin');
+    await admin.messaging().send({
+      token: fcmToken,
+      notification: {
+        title: '✅ Cans Filled!',
+        body: 'Your water cans have been filled by the distributor'
+      },
+      data: {
+        type: 'can_filled',
+        userId: userId.toString()
+      }
+    });
+    */
+
+  } catch (error) {
+    console.error(`❌ Error sending notification to user ${userId}:`, error);
+  }
+}
 
 module.exports = router;
