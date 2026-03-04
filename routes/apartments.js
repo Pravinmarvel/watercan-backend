@@ -1,13 +1,15 @@
 // =====================================================
-// APARTMENTS API ROUTE - NEW BACKEND ENDPOINT
+// APARTMENTS API ROUTE - FIXED VERSION
 // =====================================================
 
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 
+// =====================================================
 // GET /api/apartments/:apartmentId/residents
 // Returns all residents with their order totals for current cycle
+// =====================================================
 router.get('/:apartmentId/residents', async (req, res) => {
   try {
     const { apartmentId } = req.params;
@@ -21,15 +23,17 @@ router.get('/:apartmentId/residents', async (req, res) => {
     
     if (day <= 10) {
       cycleStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 10);
+      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 10, 23, 59, 59);
     } else if (day <= 20) {
       cycleStart = new Date(now.getFullYear(), now.getMonth(), 11);
-      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 20);
+      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 20, 23, 59, 59);
     } else {
       cycleStart = new Date(now.getFullYear(), now.getMonth(), 21);
       const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-      cycleEnd = new Date(now.getFullYear(), now.getMonth(), lastDay);
+      cycleEnd = new Date(now.getFullYear(), now.getMonth(), lastDay, 23, 59, 59);
     }
+    
+    console.log(`📅 Cycle: ${cycleStart.toISOString()} to ${cycleEnd.toISOString()}`);
     
     // ✅ CRITICAL QUERY: Gets residents with TOTAL cans including additional!
     const query = `
@@ -63,11 +67,11 @@ router.get('/:apartmentId/residents', async (req, res) => {
       cycleEnd.toISOString()
     ]);
     
-    console.log(`✅ Found ${result.rows.length} residents`);
+    console.log(`✅ Found ${result.rows.length} residents for apartment ${apartmentId}`);
     
     // Log details for debugging
     result.rows.forEach(row => {
-      console.log(`   User ${row.id}: ${row.total_cans_cycle} cans`);
+      console.log(`   User ${row.id} (${row.full_name}): ${row.total_cans_cycle} cans this cycle`);
     });
     
     res.json({
@@ -94,17 +98,21 @@ router.get('/:apartmentId/residents', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       error: 'Failed to get apartment residents',
-      details: error.message
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
 
+// =====================================================
 // GET /api/apartments/:apartmentId/orders
 // Get all orders for an apartment (for debugging)
+// =====================================================
 router.get('/:apartmentId/orders', async (req, res) => {
   try {
     const { apartmentId } = req.params;
     const { startDate, endDate } = req.query;
+    
+    console.log(`📤 Getting orders for apartment ${apartmentId}`);
     
     let query = `
       SELECT 
@@ -148,16 +156,21 @@ router.get('/:apartmentId/orders', async (req, res) => {
     console.error('❌ Get apartment orders error:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to get apartment orders' 
+      error: 'Failed to get apartment orders',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
 
-// GET /api/distributors/:distributorId/apartments
+// =====================================================
+// GET /api/apartments/distributor/:distributorId
 // Get all apartments for a distributor
+// =====================================================
 router.get('/distributor/:distributorId', async (req, res) => {
   try {
     const { distributorId } = req.params;
+    
+    console.log(`📤 Getting apartments for distributor ${distributorId}`);
     
     const query = `
       SELECT 
@@ -188,7 +201,49 @@ router.get('/distributor/:distributorId', async (req, res) => {
     console.error('❌ Get distributor apartments error:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to get apartments' 
+      error: 'Failed to get apartments',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// =====================================================
+// GET /api/apartments (all apartments - for testing)
+// =====================================================
+router.get('/', async (req, res) => {
+  try {
+    console.log(`📤 Getting all apartments`);
+    
+    const query = `
+      SELECT 
+        id,
+        name,
+        location,
+        price_per_can,
+        join_code,
+        distributor_id,
+        distributor_name,
+        created_at
+      FROM apartment_groups
+      ORDER BY created_at DESC
+      LIMIT 100
+    `;
+    
+    const result = await pool.query(query);
+    
+    console.log(`✅ Found ${result.rows.length} total apartments`);
+    
+    res.json({
+      success: true,
+      apartments: result.rows
+    });
+    
+  } catch (error) {
+    console.error('❌ Get all apartments error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to get apartments',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
