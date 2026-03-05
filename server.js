@@ -1,5 +1,5 @@
 // =====================================================
-// WATERCAN BACKEND - COMPLETE FIXED SERVER
+// WATERCAN BACKEND - WITH FIREBASE ADMIN SDK
 // =====================================================
 require('dotenv').config();
 const express = require('express');
@@ -7,6 +7,27 @@ const cors = require('cors');
 const { pool, initializeDatabase } = require('./db');
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// =====================================================
+// FIREBASE ADMIN SDK INITIALIZATION
+// =====================================================
+const admin = require('firebase-admin');
+
+try {
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId: process.env.FIREBASE_PROJECT_ID || 'watercan-a1499',
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL || 'firebase-adminsdk-fbsvc@watercan-a1499.iam.gserviceaccount.com',
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n') || 
+        process.env.FIREBASE_PRIVATE_KEY_RAW
+    })
+  });
+  console.log('✅ Firebase Admin SDK initialized successfully');
+} catch (error) {
+  console.error('❌ Firebase Admin init failed:', error.message);
+  console.error('⚠️ Notifications will not work without Firebase Admin SDK');
+  console.error('Check environment variables: FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY');
+}
 
 // =====================================================
 // MIDDLEWARE
@@ -34,7 +55,8 @@ app.get('/', (req, res) => {
   res.json({
     message: 'WaterCan Backend API',
     status: 'running',
-    version: '2.2.0',
+    version: '2.3.0',
+    firebase: admin.apps.length > 0 ? 'initialized' : 'not initialized',
     timestamp: new Date().toISOString()
   });
 });
@@ -43,7 +65,8 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    database: pool ? 'connected' : 'disconnected'
+    database: pool ? 'connected' : 'disconnected',
+    firebase: admin.apps.length > 0 ? 'ready' : 'not initialized'
   });
 });
 
@@ -57,36 +80,22 @@ const subscriptionRoutes = require('./routes/subscriptions');
 const apartmentRoutes = require('./routes/apartments');
 
 // =====================================================
-// ✅ MOUNT ALL ROUTES - FIXED ORDER!
+// ✅ MOUNT ALL ROUTES
 // =====================================================
 
-// User routes
 app.use('/api/users', userRoutes);
-
-// Distributor routes
 app.use('/api/distributors', distributorRoutes);
-
-// Return routes
 app.use('/api/returns', returnRoutes);
-
-// Order routes
 app.use('/api/orders', orderRoutes);
-
-// ✅ Can Status routes - BOTH FORMATS!
-app.use('/api/can-status', canStatusRoutes);  // For: /api/can-status
-app.use('/api/users/:userId/can-status', canStatusRoutes);  // For: /api/users/1/can-status ✅ CRITICAL FIX!
-
-// Subscription routes
+app.use('/api/can-status', canStatusRoutes);
+app.use('/api/users/:userId/can-status', canStatusRoutes);  // ✅ User-specific route
 app.use('/api/subscriptions', subscriptionRoutes);
-
-// Apartment routes
 app.use('/api/apartments', apartmentRoutes);
 
 // =====================================================
 // ERROR HANDLING
 // =====================================================
 
-// 404 handler
 app.use((req, res) => {
   console.log(`❌ 404 - Route not found: ${req.method} ${req.path}`);
   res.status(404).json({ 
@@ -96,7 +105,6 @@ app.use((req, res) => {
   });
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
   console.error('❌ Error:', err);
   res.status(err.status || 500).json({
@@ -116,9 +124,9 @@ async function startServer() {
     console.log('✅ Database initialized');
     
     app.listen(PORT, () => {
-      console.log(`\n${'='.repeat(60)}`);
-      console.log(`🚀 WaterCan Server Running - v2.2.0 (Can Status Fixed!)`);
-      console.log(`${'='.repeat(60)}`);
+      console.log(`\n${'='.repeat(70)}`);
+      console.log(`🚀 WaterCan Server Running - v2.3.0 (Firebase Notifications!)`);
+      console.log(`${'='.repeat(70)}`);
       console.log(`📍 Port: ${PORT}`);
       console.log(`📍 Health: http://localhost:${PORT}/health`);
       console.log(`📍 API Base: http://localhost:${PORT}/api`);
@@ -126,13 +134,16 @@ async function startServer() {
       console.log(`   ✅ /api/users                     - User authentication & profile`);
       console.log(`   ✅ /api/orders                    - Order management`);
       console.log(`   ✅ /api/can-status                - Can status (distributor)`);
-      console.log(`   ✅ /api/users/:userId/can-status  - Can status (user-specific) 🆕`);
+      console.log(`   ✅ /api/users/:userId/can-status  - Can status (user-specific)`);
       console.log(`   ✅ /api/subscriptions             - Subscription management`);
       console.log(`   ✅ /api/distributors              - Distributor management`);
       console.log(`   ✅ /api/returns                   - Return management`);
       console.log(`   ✅ /api/apartments                - Apartment residents & orders`);
+      console.log(`\n🔔 Firebase Status:`);
+      console.log(`   ${admin.apps.length > 0 ? '✅' : '❌'} Firebase Admin SDK: ${admin.apps.length > 0 ? 'Ready' : 'Not initialized'}`);
+      console.log(`   ${admin.apps.length > 0 ? '✅' : '❌'} Push Notifications: ${admin.apps.length > 0 ? 'Enabled' : 'Disabled'}`);
       console.log(`\n⚙️  Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`${'='.repeat(60)}\n`);
+      console.log(`${'='.repeat(70)}\n`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
