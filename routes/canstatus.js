@@ -153,9 +153,9 @@ router.put('/', authenticateToken, async (req, res) => {
 
     console.log(`✅ Can status updated successfully for user ${userId}`);
 
-    // ✅ Send notification if cans were filled
+    // ✅ Send notification if cans were filled (only when called by distributor)
     const wasFilled = can_1_full === true || can_2_full === true || can_3_full === true;
-    if (wasFilled) {
+    if (wasFilled && req.distributor) {
       const userName = userCheck.rows[0].full_name;
       await sendCanFilledNotification(userId, userName);
     }
@@ -284,10 +284,12 @@ router.delete('/', authenticateToken, async (req, res) => {
 });
 
 // =====================================================
-// NOTIFICATION HELPER FUNCTION
+// ✅ BEAUTIFUL NOTIFICATION WITH DISTRIBUTOR NAME & TIME
 // =====================================================
 async function sendCanFilledNotification(userId, userName) {
   try {
+    const admin = require('firebase-admin');
+    
     // Get user's FCM token
     const userQuery = await pool.query(
       'SELECT fcm_token FROM users WHERE id = $1',
@@ -301,29 +303,67 @@ async function sendCanFilledNotification(userId, userName) {
 
     const fcmToken = userQuery.rows[0].fcm_token;
 
-    console.log(`📬 Notification ready for ${userName} (User ${userId})`);
-    console.log(`📱 FCM Token: ${fcmToken.substring(0, 20)}...`);
+    // ✅ Get distributor info
+    const distributorQuery = await pool.query(`
+      SELECT d.full_name as distributor_name
+      FROM users u
+      JOIN apartment_groups ag ON u.apartment_id = ag.id
+      JOIN distributors d ON ag.distributor_id = d.id
+      WHERE u.id = $1
+    `, [userId]);
 
-    // TODO: Implement Firebase Admin SDK notification
-    /*
-    const admin = require('firebase-admin');
+    const distributorName = distributorQuery.rows[0]?.distributor_name || 'Your distributor';
+    
+    // ✅ Format time nicely (3:45 PM IST format)
+    const now = new Date();
+    const options = { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
+    };
+    const currentTime = now.toLocaleTimeString('en-IN', options);
+
+    // ✅ Send beautiful notification with Firebase Admin SDK
     await admin.messaging().send({
       token: fcmToken,
       notification: {
-        title: '✅ Cans Filled!',
-        body: `Hi ${userName}, your water cans have been filled by the distributor`
+        title: `✨ Fresh Water Delivered!`,
+        body: `${distributorName} just filled your cans at ${currentTime}. Enjoy fresh, clean water! 💧`
       },
       data: {
         type: 'can_filled',
         userId: userId.toString(),
-        timestamp: new Date().toISOString()
+        distributorName: distributorName,
+        timestamp: now.toISOString(),
+        time: currentTime
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId: 'watercan_channel',
+          icon: '@mipmap/ic_launcher',
+          color: '#03A9F4',
+          defaultSound: true,
+          defaultVibrateTimings: true
+        }
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            badge: 1,
+            'content-available': 1
+          }
+        }
       }
     });
-    console.log(`✅ Notification sent to ${userName}`);
-    */
+
+    console.log(`✅ Notification sent: "${distributorName} filled cans for ${userName} at ${currentTime}"`);
 
   } catch (error) {
-    console.error(`❌ Error sending notification to user ${userId}:`, error);
+    console.error(`❌ Notification error for user ${userId}:`, error.message);
   }
 }
 
