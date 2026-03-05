@@ -467,3 +467,180 @@ router.post('/apartments', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
+// =====================================================
+// WORKING SCHEDULE ROUTES - NEW
+// =====================================================
+
+// Update working schedule
+router.put('/schedule', authenticateToken, async (req, res) => {
+  try {
+    if (!req.distributor || !req.distributor.distributorId) {
+      return res.status(401).json({ error: 'Invalid authentication' });
+    }
+
+    const distributorId = req.distributor.distributorId;
+    const { working_schedule } = req.body;
+
+    console.log(`📅 Updating schedule for distributor ${distributorId}`);
+
+    // Validate schedule format
+    if (typeof working_schedule !== 'object') {
+      return res.status(400).json({ error: 'Invalid schedule format' });
+    }
+
+    const query = `
+      UPDATE distributors 
+      SET working_schedule = $1 
+      WHERE id = $2 
+      RETURNING id, full_name, is_working, working_schedule
+    `;
+
+    const result = await pool.query(query, [
+      JSON.stringify(working_schedule),
+      distributorId
+    ]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Distributor not found' });
+    }
+
+    console.log(`✅ Schedule updated for distributor ${distributorId}`);
+
+    res.json({
+      message: 'Schedule updated successfully',
+      distributor: {
+        id: result.rows[0].id,
+        fullName: result.rows[0].full_name,
+        isWorking: result.rows[0].is_working,
+        workingSchedule: result.rows[0].working_schedule
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Update schedule error:', error);
+    res.status(500).json({ error: 'Failed to update schedule' });
+  }
+});
+
+// Get working schedule
+router.get('/schedule', authenticateToken, async (req, res) => {
+  try {
+    if (!req.distributor || !req.distributor.distributorId) {
+      return res.status(401).json({ error: 'Invalid authentication' });
+    }
+
+    const distributorId = req.distributor.distributorId;
+
+    const query = `
+      SELECT id, full_name, working_schedule 
+      FROM distributors 
+      WHERE id = $1
+    `;
+
+    const result = await pool.query(query, [distributorId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Distributor not found' });
+    }
+
+    res.json({
+      schedule: result.rows[0].working_schedule || {}
+    });
+
+  } catch (error) {
+    console.error('❌ Get schedule error:', error);
+    res.status(500).json({ error: 'Failed to get schedule' });
+  }
+});
+
+// Check if distributor is currently working
+router.get('/is-working-now', authenticateToken, async (req, res) => {
+  try {
+    if (!req.distributor || !req.distributor.distributorId) {
+      return res.status(401).json({ error: 'Invalid authentication' });
+    }
+
+    const distributorId = req.distributor.distributorId;
+
+    const query = `
+      SELECT id, full_name, is_working, working_schedule 
+      FROM distributors 
+      WHERE id = $1
+    `;
+
+    const result = await pool.query(query, [distributorId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Distributor not found' });
+    }
+
+    const distributor = result.rows[0];
+    
+    // If globally set to holiday
+    if (!distributor.is_working) {
+      return res.json({
+        isWorking: false,
+        status: 'holiday',
+        message: 'Distributor is on holiday'
+      });
+    }
+
+    // Check current day and time
+    const now = new Date();
+    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const currentDay = days[now.getDay()];
+    const currentTime = now.toLocaleTimeString('en-IN', { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Asia/Kolkata'
+    });
+
+    const schedule = distributor.working_schedule || {};
+    const daySchedule = schedule[currentDay];
+
+    if (!daySchedule) {
+      // No schedule set for today, assume working
+      return res.json({
+        isWorking: true,
+        status: 'working',
+        message: 'No schedule set - default working'
+      });
+    }
+
+    // Check if it's a holiday
+    if (daySchedule.isHoliday) {
+      return res.json({
+        isWorking: false,
+        status: 'holiday',
+        message: 'Holiday today'
+      });
+    }
+
+    // Check working hours
+    if (daySchedule.start && daySchedule.end) {
+      const isWithinHours = currentTime >= daySchedule.start && currentTime <= daySchedule.end;
+      
+      return res.json({
+        isWorking: isWithinHours,
+        status: isWithinHours ? 'working' : 'offline',
+        message: isWithinHours 
+          ? `Working (${daySchedule.start} - ${daySchedule.end})`
+          : `Offline (Working hours: ${daySchedule.start} - ${daySchedule.end})`
+      });
+    }
+
+    // Default to working
+    res.json({
+      isWorking: true,
+      status: 'working',
+      message: 'Working'
+    });
+
+  } catch (error) {
+    console.error('❌ Check working status error:', error);
+    res.status(500).json({ error: 'Failed to check working status' });
+  }
+});
+
+module.exports = router;

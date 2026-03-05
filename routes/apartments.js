@@ -1,15 +1,13 @@
 // =====================================================
-// APARTMENTS API ROUTE - FIXED VERSION
+// APARTMENTS API ROUTE - NEW BACKEND ENDPOINT
 // =====================================================
 
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 
-// =====================================================
 // GET /api/apartments/:apartmentId/residents
 // Returns all residents with their order totals for current cycle
-// =====================================================
 router.get('/:apartmentId/residents', async (req, res) => {
   try {
     const { apartmentId } = req.params;
@@ -23,17 +21,15 @@ router.get('/:apartmentId/residents', async (req, res) => {
     
     if (day <= 10) {
       cycleStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 10, 23, 59, 59);
+      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 10);
     } else if (day <= 20) {
       cycleStart = new Date(now.getFullYear(), now.getMonth(), 11);
-      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 20, 23, 59, 59);
+      cycleEnd = new Date(now.getFullYear(), now.getMonth(), 20);
     } else {
       cycleStart = new Date(now.getFullYear(), now.getMonth(), 21);
       const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-      cycleEnd = new Date(now.getFullYear(), now.getMonth(), lastDay, 23, 59, 59);
+      cycleEnd = new Date(now.getFullYear(), now.getMonth(), lastDay);
     }
-    
-    console.log(`📅 Cycle: ${cycleStart.toISOString()} to ${cycleEnd.toISOString()}`);
     
     // ✅ CRITICAL QUERY: Gets residents with TOTAL cans including additional!
     const query = `
@@ -67,11 +63,11 @@ router.get('/:apartmentId/residents', async (req, res) => {
       cycleEnd.toISOString()
     ]);
     
-    console.log(`✅ Found ${result.rows.length} residents for apartment ${apartmentId}`);
+    console.log(`✅ Found ${result.rows.length} residents`);
     
     // Log details for debugging
     result.rows.forEach(row => {
-      console.log(`   User ${row.id} (${row.full_name}): ${row.total_cans_cycle} cans this cycle`);
+      console.log(`   User ${row.id}: ${row.total_cans_cycle} cans`);
     });
     
     res.json({
@@ -98,21 +94,17 @@ router.get('/:apartmentId/residents', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       error: 'Failed to get apartment residents',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      details: error.message
     });
   }
 });
 
-// =====================================================
 // GET /api/apartments/:apartmentId/orders
 // Get all orders for an apartment (for debugging)
-// =====================================================
 router.get('/:apartmentId/orders', async (req, res) => {
   try {
     const { apartmentId } = req.params;
     const { startDate, endDate } = req.query;
-    
-    console.log(`📤 Getting orders for apartment ${apartmentId}`);
     
     let query = `
       SELECT 
@@ -156,21 +148,16 @@ router.get('/:apartmentId/orders', async (req, res) => {
     console.error('❌ Get apartment orders error:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to get apartment orders',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: 'Failed to get apartment orders' 
     });
   }
 });
 
-// =====================================================
-// GET /api/apartments/distributor/:distributorId
+// GET /api/distributors/:distributorId/apartments
 // Get all apartments for a distributor
-// =====================================================
 router.get('/distributor/:distributorId', async (req, res) => {
   try {
     const { distributorId } = req.params;
-    
-    console.log(`📤 Getting apartments for distributor ${distributorId}`);
     
     const query = `
       SELECT 
@@ -201,50 +188,110 @@ router.get('/distributor/:distributorId', async (req, res) => {
     console.error('❌ Get distributor apartments error:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to get apartments',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      error: 'Failed to get apartments' 
     });
   }
 });
 
+module.exports = router;
 // =====================================================
-// GET /api/apartments (all apartments - for testing)
+// GET DISTRIBUTOR WORKING STATUS - NEW
 // =====================================================
-router.get('/', async (req, res) => {
+router.get('/:distributorId/working-status', async (req, res) => {
   try {
-    console.log(`📤 Getting all apartments`);
-    
+    const distributorId = parseInt(req.params.distributorId);
+
+    if (isNaN(distributorId)) {
+      return res.status(400).json({ error: 'Invalid distributor ID' });
+    }
+
     const query = `
-      SELECT 
-        id,
-        name,
-        location,
-        price_per_can,
-        join_code,
-        distributor_id,
-        distributor_name,
-        created_at
-      FROM apartment_groups
-      ORDER BY created_at DESC
-      LIMIT 100
+      SELECT id, full_name, is_working, working_schedule 
+      FROM distributors 
+      WHERE id = $1
     `;
+
+    const result = await pool.query(query, [distributorId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Distributor not found' });
+    }
+
+    const distributor = result.rows[0];
     
-    const result = await pool.query(query);
+    // If globally set to holiday
+    if (!distributor.is_working) {
+      return res.json({
+        isWorking: false,
+        status: 'holiday',
+        message: 'Distributor is on holiday'
+      });
+    }
+
+    // Check current day and time (IST timezone)
+    const now = new Date();
+    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const currentDay = days[now.getDay()];
     
-    console.log(`✅ Found ${result.rows.length} total apartments`);
-    
-    res.json({
-      success: true,
-      apartments: result.rows
+    // Format current time in HH:MM format (24-hour)
+    const currentTime = now.toLocaleTimeString('en-IN', { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Asia/Kolkata'
     });
-    
+
+    const schedule = distributor.working_schedule || {};
+    const daySchedule = schedule[currentDay];
+
+    console.log(`📅 Checking ${distributor.full_name} schedule for ${currentDay} at ${currentTime}`);
+
+    if (!daySchedule) {
+      // No schedule set for today, assume working
+      console.log(`✅ No schedule for ${currentDay} - default working`);
+      return res.json({
+        isWorking: true,
+        status: 'working',
+        message: 'Working'
+      });
+    }
+
+    // Check if it's a holiday
+    if (daySchedule.isHoliday) {
+      console.log(`🏖️ ${currentDay} is marked as holiday`);
+      return res.json({
+        isWorking: false,
+        status: 'holiday',
+        message: 'Holiday today'
+      });
+    }
+
+    // Check working hours
+    if (daySchedule.start && daySchedule.end) {
+      const isWithinHours = currentTime >= daySchedule.start && currentTime <= daySchedule.end;
+      
+      console.log(`⏰ Working hours: ${daySchedule.start} - ${daySchedule.end}, Current: ${currentTime}, Within hours: ${isWithinHours}`);
+      
+      return res.json({
+        isWorking: isWithinHours,
+        status: isWithinHours ? 'working' : 'offline',
+        message: isWithinHours 
+          ? `Working`
+          : `Offline`,
+        workingHours: `${daySchedule.start} - ${daySchedule.end}`
+      });
+    }
+
+    // Default to working
+    return res.json({
+      isWorking: true,
+      status: 'working',
+      message: 'Working'
+    });
+
   } catch (error) {
-    console.error('❌ Get all apartments error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to get apartments',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    console.error('❌ Get working status error:', error);
+    res.status(500).json({ error: 'Failed to get working status' });
   }
 });
 
