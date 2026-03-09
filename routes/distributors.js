@@ -43,7 +43,7 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 // =====================================================
-// AUTHENTICATION MIDDLEWARE - FIXED
+// AUTHENTICATION MIDDLEWARE
 // =====================================================
 function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -60,10 +60,27 @@ function authenticateToken(req, res, next) {
       console.error('❌ Token verification failed:', err.message);
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
-    // ✅ FIXED: Set req.distributor properly
     req.distributor = distributor;
     next();
   });
+}
+
+// =====================================================
+// HELPER: Calculate distance between two coordinates (Haversine formula)
+// =====================================================
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371e3; // Earth radius in meters
+  const φ1 = lat1 * Math.PI / 180;
+  const φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+  const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+            Math.cos(φ1) * Math.cos(φ2) *
+            Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c; // Distance in meters
 }
 
 // =====================================================
@@ -203,7 +220,9 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
         phone: distributor.phone,
         fullName: distributor.full_name,
         upiId: distributor.upi_id,
-        isWorking: distributor.is_working
+        isWorking: distributor.is_working,
+        currentLatitude: distributor.current_latitude,
+        currentLongitude: distributor.current_longitude
       }
     });
 
@@ -214,12 +233,11 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
 });
 
 // =====================================================
-// PROFILE ENDPOINTS - FIXED
+// PROFILE ENDPOINTS
 // =====================================================
 
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    // ✅ FIXED: Check if distributor object exists and has distributorId
     if (!req.distributor || !req.distributor.distributorId) {
       console.error('❌ Distributor object missing or invalid:', req.distributor);
       return res.status(401).json({ error: 'Invalid authentication. Please log in again.' });
@@ -229,7 +247,7 @@ router.get('/profile', authenticateToken, async (req, res) => {
     console.log(`📤 Getting profile for distributor ${distributorId}`);
     
     const query = 
-      'SELECT id, phone, full_name, upi_id, is_working, created_at FROM distributors WHERE id = $1';
+      'SELECT id, phone, full_name, upi_id, is_working, current_latitude, current_longitude, created_at FROM distributors WHERE id = $1';
     const result = await pool.query(query, [distributorId]);
 
     if (result.rows.length === 0) {
@@ -243,6 +261,8 @@ router.get('/profile', authenticateToken, async (req, res) => {
         fullName: result.rows[0].full_name,
         upiId: result.rows[0].upi_id,
         isWorking: result.rows[0].is_working,
+        currentLatitude: result.rows[0].current_latitude,
+        currentLongitude: result.rows[0].current_longitude,
         createdAt: result.rows[0].created_at
       }
     });
@@ -255,7 +275,6 @@ router.get('/profile', authenticateToken, async (req, res) => {
 
 router.put('/profile', authenticateToken, async (req, res) => {
   try {
-    // ✅ FIXED: Check if distributor object exists
     if (!req.distributor || !req.distributor.distributorId) {
       console.error('❌ Distributor object missing or invalid:', req.distributor);
       return res.status(401).json({ error: 'Invalid authentication. Please log in again.' });
@@ -278,19 +297,9 @@ router.put('/profile', authenticateToken, async (req, res) => {
     }
 
     if (upi_id !== undefined) {
-      if (upi_id !== null && upi_id.trim() !== '') {
-        const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
-        if (!upiRegex.test(upi_id.trim())) {
-          return res.status(400).json({ 
-            error: 'Invalid UPI ID format. Format: username@bank' 
-          });
-        }
-        updates.push(`upi_id = $${paramCount}`);
-        values.push(upi_id.trim());
-      } else {
-        updates.push(`upi_id = $${paramCount}`);
-        values.push(null);
-      }
+      const sanitizedUpi = upi_id.trim().substring(0, 100);
+      updates.push(`upi_id = $${paramCount}`);
+      values.push(sanitizedUpi);
       paramCount++;
     }
 
@@ -298,12 +307,10 @@ router.put('/profile', authenticateToken, async (req, res) => {
       updates.push(`is_working = $${paramCount}`);
       values.push(is_working);
       paramCount++;
-      
-      console.log(`🔄 Distributor ${distributorId} working status changed to: ${is_working ? 'Working' : 'Holiday'}`);
     }
 
     if (updates.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
+      return res.status(400).json({ error: 'No valid fields to update' });
     }
 
     values.push(distributorId);
@@ -312,7 +319,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
       UPDATE distributors 
       SET ${updates.join(', ')} 
       WHERE id = $${paramCount} 
-      RETURNING id, phone, full_name, upi_id, is_working
+      RETURNING id, phone, full_name, upi_id, is_working, current_latitude, current_longitude
     `;
 
     const result = await pool.query(query, values);
@@ -321,7 +328,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Distributor not found' });
     }
 
-    console.log(`✅ Profile updated: Working status is now ${result.rows[0].is_working ? 'Working' : 'Holiday'}`);
+    console.log(`✅ Profile updated for distributor ${distributorId}`);
 
     res.json({
       message: 'Profile updated successfully',
@@ -330,7 +337,9 @@ router.put('/profile', authenticateToken, async (req, res) => {
         phone: result.rows[0].phone,
         fullName: result.rows[0].full_name,
         upiId: result.rows[0].upi_id,
-        isWorking: result.rows[0].is_working
+        isWorking: result.rows[0].is_working,
+        currentLatitude: result.rows[0].current_latitude,
+        currentLongitude: result.rows[0].current_longitude
       }
     });
 
@@ -341,14 +350,219 @@ router.put('/profile', authenticateToken, async (req, res) => {
 });
 
 // =====================================================
-// PUBLIC ENDPOINTS
+// LOCATION TRACKING ENDPOINTS - NEW
 // =====================================================
 
-router.get('/:distributorId/status', async (req, res) => {
+// Update distributor's current location
+router.post('/update-location', authenticateToken, async (req, res) => {
+  try {
+    if (!req.distributor || !req.distributor.distributorId) {
+      return res.status(401).json({ error: 'Invalid authentication' });
+    }
+
+    const distributorId = req.distributor.distributorId;
+    const { latitude, longitude } = req.body;
+
+    // Validate coordinates
+    if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+      return res.status(400).json({ error: 'Valid latitude and longitude required' });
+    }
+
+    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      return res.status(400).json({ error: 'Invalid coordinate values' });
+    }
+
+    console.log(`📍 Updating location for distributor ${distributorId}: ${latitude}, ${longitude}`);
+
+    // Update distributor's location
+    const updateQuery = `
+      UPDATE distributors 
+      SET current_latitude = $1, current_longitude = $2, location_updated_at = NOW()
+      WHERE id = $3
+      RETURNING id, current_latitude, current_longitude
+    `;
+
+    const updateResult = await pool.query(updateQuery, [latitude, longitude, distributorId]);
+
+    if (updateResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Distributor not found' });
+    }
+
+    // Get all apartments managed by this distributor
+    const apartmentsQuery = `
+      SELECT id FROM apartment_groups WHERE distributor_id = $1
+    `;
+    const apartmentsResult = await pool.query(apartmentsQuery, [distributorId]);
+    const apartmentIds = apartmentsResult.rows.map(row => row.id);
+
+    if (apartmentIds.length === 0) {
+      return res.json({
+        message: 'Location updated',
+        nearbyUsers: []
+      });
+    }
+
+    // Get all users in these apartments with their addresses
+    const usersQuery = `
+      SELECT u.id, u.full_name, u.apartment_id, a.latitude, a.longitude
+      FROM users u
+      JOIN addresses a ON a.user_id = u.id
+      WHERE u.apartment_id = ANY($1) AND a.latitude IS NOT NULL AND a.longitude IS NOT NULL
+    `;
+    const usersResult = await pool.query(usersQuery, [apartmentIds]);
+
+    // Check proximity (100m radius) and update their can status
+    const nearbyUsers = [];
+    const PROXIMITY_RADIUS = 100; // meters
+
+    for (const user of usersResult.rows) {
+      const distance = calculateDistance(
+        latitude, 
+        longitude, 
+        user.latitude, 
+        user.longitude
+      );
+
+      if (distance <= PROXIMITY_RADIUS) {
+        nearbyUsers.push({
+          userId: user.id,
+          userName: user.full_name,
+          distance: Math.round(distance),
+          latitude: user.latitude,
+          longitude: user.longitude
+        });
+
+        // Update can status to "out for delivery" (is_working = 'out for delivery')
+        // We'll add a new column or use existing is_working field
+        console.log(`🚚 Distributor within ${Math.round(distance)}m of user ${user.id}`);
+      }
+    }
+
+    console.log(`✅ Location updated. Found ${nearbyUsers.length} nearby users`);
+
+    res.json({
+      message: 'Location updated successfully',
+      location: {
+        latitude: updateResult.rows[0].current_latitude,
+        longitude: updateResult.rows[0].current_longitude
+      },
+      nearbyUsers: nearbyUsers
+    });
+
+  } catch (error) {
+    console.error('❌ Update location error:', error);
+    res.status(500).json({ error: 'Failed to update location' });
+  }
+});
+
+// Get distributor's current location
+router.get('/location', authenticateToken, async (req, res) => {
+  try {
+    if (!req.distributor || !req.distributor.distributorId) {
+      return res.status(401).json({ error: 'Invalid authentication' });
+    }
+
+    const distributorId = req.distributor.distributorId;
+
+    const query = `
+      SELECT current_latitude, current_longitude, location_updated_at 
+      FROM distributors 
+      WHERE id = $1
+    `;
+
+    const result = await pool.query(query, [distributorId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Distributor not found' });
+    }
+
+    res.json({
+      location: {
+        latitude: result.rows[0].current_latitude,
+        longitude: result.rows[0].current_longitude,
+        updatedAt: result.rows[0].location_updated_at
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get location error:', error);
+    res.status(500).json({ error: 'Failed to get location' });
+  }
+});
+
+// Check if distributor is near a specific user (for user app)
+router.get('/near-user/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Get user's address
+    const userQuery = `
+      SELECT u.apartment_id, a.latitude, a.longitude
+      FROM users u
+      JOIN addresses a ON a.user_id = u.id
+      WHERE u.id = $1 AND a.latitude IS NOT NULL AND a.longitude IS NOT NULL
+      LIMIT 1
+    `;
+    const userResult = await pool.query(userQuery, [userId]);
+
+    if (userResult.rows.length === 0) {
+      return res.json({ 
+        isNearby: false, 
+        message: 'User address not found' 
+      });
+    }
+
+    const { apartment_id, latitude: userLat, longitude: userLon } = userResult.rows[0];
+
+    // Get distributor for this apartment
+    const distributorQuery = `
+      SELECT d.id, d.full_name, d.current_latitude, d.current_longitude, d.location_updated_at
+      FROM distributors d
+      JOIN apartment_groups ag ON ag.distributor_id = d.id
+      WHERE ag.id = $1 AND d.current_latitude IS NOT NULL AND d.current_longitude IS NOT NULL
+    `;
+    const distributorResult = await pool.query(distributorQuery, [apartment_id]);
+
+    if (distributorResult.rows.length === 0) {
+      return res.json({ 
+        isNearby: false, 
+        message: 'Distributor location not available' 
+      });
+    }
+
+    const distributor = distributorResult.rows[0];
+    const distance = calculateDistance(
+      distributor.current_latitude,
+      distributor.current_longitude,
+      userLat,
+      userLon
+    );
+
+    const PROXIMITY_RADIUS = 100; // meters
+    const isNearby = distance <= PROXIMITY_RADIUS;
+
+    res.json({
+      isNearby: isNearby,
+      distance: Math.round(distance),
+      distributorName: distributor.full_name,
+      message: isNearby 
+        ? `Distributor is ${Math.round(distance)}m away - Out for delivery!` 
+        : `Distributor is ${Math.round(distance)}m away`
+    });
+
+  } catch (error) {
+    console.error('❌ Check proximity error:', error);
+    res.status(500).json({ error: 'Failed to check proximity' });
+  }
+});
+
+// =====================================================
+// EXISTING ENDPOINTS (CONTINUED)
+// =====================================================
+
+router.get('/status/:distributorId', async (req, res) => {
   try {
     const { distributorId } = req.params;
-
-    console.log(`📤 Getting working status for distributor ${distributorId}`);
 
     const query = 'SELECT id, full_name, is_working FROM distributors WHERE id = $1';
     const result = await pool.query(query, [distributorId]);
@@ -357,14 +571,10 @@ router.get('/:distributorId/status', async (req, res) => {
       return res.status(404).json({ error: 'Distributor not found' });
     }
 
-    const distributor = result.rows[0];
-
-    console.log(`✅ Distributor status: ${distributor.is_working ? 'Working' : 'Holiday'}`);
-
     res.json({
-      distributorId: distributor.id,
-      name: distributor.full_name,
-      isWorking: distributor.is_working
+      distributorId: result.rows[0].id,
+      name: result.rows[0].full_name,
+      isWorking: result.rows[0].is_working
     });
 
   } catch (error) {
@@ -404,7 +614,6 @@ router.get('/upi/:distributorId', async (req, res) => {
 
 router.post('/apartments', authenticateToken, async (req, res) => {
   try {
-    // ✅ FIXED: Check if distributor object exists
     if (!req.distributor || !req.distributor.distributorId) {
       console.error('❌ Distributor object missing or invalid:', req.distributor);
       return res.status(401).json({ error: 'Invalid authentication. Please log in again.' });
@@ -466,12 +675,10 @@ router.post('/apartments', authenticateToken, async (req, res) => {
   }
 });
 
-module.exports = router;
 // =====================================================
-// WORKING SCHEDULE ROUTES - NEW
+// WORKING SCHEDULE ROUTES
 // =====================================================
 
-// Update working schedule
 router.put('/schedule', authenticateToken, async (req, res) => {
   try {
     if (!req.distributor || !req.distributor.distributorId) {
@@ -483,7 +690,6 @@ router.put('/schedule', authenticateToken, async (req, res) => {
 
     console.log(`📅 Updating schedule for distributor ${distributorId}`);
 
-    // Validate schedule format
     if (typeof working_schedule !== 'object') {
       return res.status(400).json({ error: 'Invalid schedule format' });
     }
@@ -522,7 +728,6 @@ router.put('/schedule', authenticateToken, async (req, res) => {
   }
 });
 
-// Get working schedule
 router.get('/schedule', authenticateToken, async (req, res) => {
   try {
     if (!req.distributor || !req.distributor.distributorId) {
@@ -553,7 +758,6 @@ router.get('/schedule', authenticateToken, async (req, res) => {
   }
 });
 
-// Check if distributor is currently working
 router.get('/is-working-now', authenticateToken, async (req, res) => {
   try {
     if (!req.distributor || !req.distributor.distributorId) {
@@ -576,7 +780,6 @@ router.get('/is-working-now', authenticateToken, async (req, res) => {
 
     const distributor = result.rows[0];
     
-    // If globally set to holiday
     if (!distributor.is_working) {
       return res.json({
         isWorking: false,
@@ -585,7 +788,6 @@ router.get('/is-working-now', authenticateToken, async (req, res) => {
       });
     }
 
-    // Check current day and time
     const now = new Date();
     const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const currentDay = days[now.getDay()];
@@ -600,7 +802,6 @@ router.get('/is-working-now', authenticateToken, async (req, res) => {
     const daySchedule = schedule[currentDay];
 
     if (!daySchedule) {
-      // No schedule set for today, assume working
       return res.json({
         isWorking: true,
         status: 'working',
@@ -608,7 +809,6 @@ router.get('/is-working-now', authenticateToken, async (req, res) => {
       });
     }
 
-    // Check if it's a holiday
     if (daySchedule.isHoliday) {
       return res.json({
         isWorking: false,
@@ -617,7 +817,6 @@ router.get('/is-working-now', authenticateToken, async (req, res) => {
       });
     }
 
-    // Check working hours
     if (daySchedule.start && daySchedule.end) {
       const isWithinHours = currentTime >= daySchedule.start && currentTime <= daySchedule.end;
       
@@ -630,7 +829,6 @@ router.get('/is-working-now', authenticateToken, async (req, res) => {
       });
     }
 
-    // Default to working
     res.json({
       isWorking: true,
       status: 'working',
