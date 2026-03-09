@@ -36,7 +36,7 @@ router.post('/send-otp', async (req, res) => {
 
     otpStore.set(phone, { otp, expiresAt, attempts: 0 });
     
-    console.log(`📱 OTP generated for ${phone}: ${otp}`);
+    if (process.env.NODE_ENV === 'development') console.log(`📱 OTP generated for ${phone}`);
     
     res.json({ message: 'OTP sent successfully', otp: otp });
 
@@ -103,7 +103,7 @@ router.post('/verify-otp', async (req, res) => {
 
     const token = jwt.sign(
       { userId: user.id, phone: user.phone },
-      process.env.JWT_SECRET || 'watercan-secret-key-2026',
+      process.env.JWT_SECRET,
       { expiresIn: '30d' }
     );
 
@@ -135,7 +135,7 @@ function authenticateToken(req, res, next) {
 
   jwt.verify(
     token, 
-    process.env.JWT_SECRET || 'watercan-secret-key-2026', 
+    process.env.JWT_SECRET, 
     (err, user) => {
       if (err) {
         return res.status(403).json({ error: 'Invalid or expired token' });

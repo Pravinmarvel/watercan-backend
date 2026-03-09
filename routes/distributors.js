@@ -53,7 +53,7 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  const secret = process.env.JWT_SECRET || 'watercan-secret-key-2026';
+  const secret = process.env.JWT_SECRET;
   
   jwt.verify(token, secret, (err, distributor) => {
     if (err) {
@@ -90,7 +90,7 @@ router.post('/send-otp', otpLimiter, async (req, res) => {
       attempts: 0 
     });
 
-    console.log(`📱 OTP generated for ${phone}: ${otp}`);
+    if (process.env.NODE_ENV === 'development') console.log(`📱 OTP generated for ${phone}`);
 
     res.json({ 
       message: 'OTP sent successfully', 
@@ -184,7 +184,7 @@ router.post('/verify-otp', verifyLimiter, async (req, res) => {
 
     otpStore.delete(phone);
 
-    const secret = process.env.JWT_SECRET || 'watercan-secret-key-2026';
+    const secret = process.env.JWT_SECRET;
 
     const token = jwt.sign(
       { 

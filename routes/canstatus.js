@@ -16,7 +16,7 @@ function authenticateToken(req, res, next) {
 
   jwt.verify(
     token, 
-    process.env.JWT_SECRET || 'watercan-secret-key-2026', 
+    process.env.JWT_SECRET, 
     (err, decoded) => {
       if (err) {
         console.error('❌ Token verification failed:', err.message);

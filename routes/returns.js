@@ -19,7 +19,7 @@ function authenticateUser(req, res, next) {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  const secret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+  const secret = process.env.JWT_SECRET;
   
   jwt.verify(token, secret, (err, user) => {
     if (err) {
@@ -38,7 +38,7 @@ function authenticateDistributor(req, res, next) {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  const secret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+  const secret = process.env.JWT_SECRET;
   
   jwt.verify(token, secret, (err, distributor) => {
     if (err) {
