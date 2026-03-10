@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 const jwt = require('jsonwebtoken');
+const admin = require('firebase-admin'); // ✅ CORRECT IMPORT
 
 // =====================================================
 // AUTHENTICATION MIDDLEWARE - HANDLES BOTH USER & DISTRIBUTOR TOKENS
@@ -288,8 +289,6 @@ router.delete('/', authenticateToken, async (req, res) => {
 // =====================================================
 async function sendCanFilledNotification(userId, userName) {
   try {
-    const admin = require('firebase-admin');
-    
     // Get user's FCM token
     const userQuery = await pool.query(
       'SELECT fcm_token FROM users WHERE id = $1',

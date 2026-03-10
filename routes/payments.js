@@ -1,8 +1,32 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
-const { authenticateToken } = require('../middleware/auth');
-const admin = require('../firebase');
+const jwt = require('jsonwebtoken');
+const admin = require('firebase-admin'); // ✅ CORRECT IMPORT
+
+// =====================================================
+// AUTHENTICATION MIDDLEWARE
+// =====================================================
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
+  jwt.verify(
+    token, 
+    process.env.JWT_SECRET, 
+    (err, user) => {
+      if (err) {
+        return res.status(403).json({ error: 'Invalid or expired token' });
+      }
+      req.user = user;
+      next();
+    }
+  );
+}
 
 // =====================================================
 // CREATE PAYMENT - ENHANCED WITH NOTIFICATION
@@ -57,7 +81,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     console.log(`✅ Payment created: ID ${payment.id}`);
 
-    // ✅ NEW: Send notification to user
+    // ✅ Send notification to user
     try {
       // Get user's FCM token
       const userResult = await pool.query(
@@ -90,6 +114,14 @@ router.post('/', authenticateToken, async (req, res) => {
               priority: 'high',
               sound: 'default',
               color: '#4CAF50'
+            }
+          },
+          apns: {
+            payload: {
+              aps: {
+                sound: 'default',
+                badge: 1
+              }
             }
           }
         };
@@ -190,7 +222,6 @@ router.get('/distributor/payments', async (req, res) => {
       return res.status(401).json({ error: 'Access token required' });
     }
 
-    const jwt = require('jsonwebtoken');
     const secret = process.env.JWT_SECRET;
 
     jwt.verify(token, secret, async (err, distributor) => {
@@ -209,7 +240,7 @@ router.get('/distributor/payments', async (req, res) => {
       const apartmentIds = apartmentsResult.rows.map(row => row.id);
 
       if (apartmentIds.length === 0) {
-        return res.json({ payments: [] });
+        return res.json({ payments: [], count: 0 });
       }
 
       // Get all payments from users in these apartments
