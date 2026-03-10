@@ -500,5 +500,44 @@ router.get('/distributor-upi', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to get distributor information' });
   }
 });
+router.post('/firebase-auth', async (req, res) => {
+  try {
+    const { phone, firebase_uid, full_name } = req.body;
+    
+    if (!phone || !firebase_uid) {
+      return res.status(400).json({ error: 'Phone and Firebase UID required' });
+    }
 
+    const userQuery = 'SELECT * FROM users WHERE phone = $1';
+    const userResult = await pool.query(userQuery, [phone]);
+
+    let user;
+    if (userResult.rows.length === 0) {
+      if (!full_name) {
+        return res.status(400).json({ 
+          error: 'Full name is required for new users',
+          requiresName: true
+        });
+      }
+
+      const insertResult = await pool.query(
+        'INSERT INTO users (phone, full_name, firebase_uid) VALUES ($1, $2, $3) RETURNING *',
+        [phone, full_name.trim(), firebase_uid]
+      );
+      user = insertResult.rows[0];
+    } else {
+      user = userResult.rows[0];
+    }
+
+    const token = jwt.sign(
+      { userId: user.id, phone: user.phone },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    res.json({ token, user: { id: user.id, phone: user.phone, fullName: user.full_name } });
+  } catch (error) {
+    res.status(500).json({ error: 'Authentication failed' });
+  }
+});
 module.exports = router;
