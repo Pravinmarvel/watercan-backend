@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 const jwt = require('jsonwebtoken');
+const admin = require('firebase-admin');
 
 // In-memory OTP storage (10-minute expiry)
 const otpStore = new Map();
@@ -22,6 +23,146 @@ setInterval(() => {
   }
 }, 5 * 60 * 1000);
 
+// =====================================================
+// ✅ NEW: GOOGLE SIGN-IN
+// =====================================================
+router.post('/google-signin', async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    
+    if (!idToken) {
+      return res.status(400).json({ error: 'ID token is required' });
+    }
+
+    console.log('📤 Verifying Google ID token...');
+
+    // Verify the Google ID token with Firebase
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const { uid, email, name } = decodedToken;
+
+    console.log(`✅ Google token verified: ${email}`);
+
+    // Check if user exists with this email
+    const userQuery = 'SELECT * FROM users WHERE email = $1';
+    const userResult = await pool.query(userQuery, [email]);
+
+    if (userResult.rows.length > 0) {
+      // Existing user - return token
+      const user = userResult.rows[0];
+      
+      const token = jwt.sign(
+        { userId: user.id, email: user.email },
+        process.env.JWT_SECRET,
+        { expiresIn: '30d' }
+      );
+
+      console.log(`✅ Existing user logged in: ${email}`);
+
+      return res.json({
+        token,
+        user: {
+          id: user.id,
+          email: user.email,
+          phone: user.phone,
+          fullName: user.full_name
+        },
+        requiresPhoneSetup: !user.phone // If no phone, need to set it up
+      });
+    } else {
+      // New user - need phone number and name
+      console.log(`ℹ️ New Google user: ${email} - requires phone setup`);
+
+      return res.json({
+        requiresPhoneSetup: true,
+        email: email,
+        googleName: name || null,
+        googleUid: uid
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Google sign-in error:', error);
+    
+    if (error.code === 'auth/id-token-expired') {
+      return res.status(401).json({ error: 'Token expired. Please sign in again.' });
+    }
+    
+    res.status(500).json({ error: 'Failed to verify Google sign-in' });
+  }
+});
+
+// =====================================================
+// ✅ NEW: COMPLETE GOOGLE REGISTRATION (Phone + Name)
+// =====================================================
+router.post('/complete-google-registration', async (req, res) => {
+  try {
+    const { email, phone, fullName, googleUid } = req.body;
+    
+    if (!email || !phone || !fullName || !googleUid) {
+      return res.status(400).json({ 
+        error: 'Email, phone, full name, and Google UID are required' 
+      });
+    }
+
+    // Validate phone
+    if (!/^\d{10}$/.test(phone)) {
+      return res.status(400).json({ error: 'Valid 10-digit phone number is required' });
+    }
+
+    console.log(`📤 Completing Google registration for ${email}`);
+
+    // Check if phone is already taken
+    const phoneCheck = await pool.query('SELECT id FROM users WHERE phone = $1', [phone]);
+    if (phoneCheck.rows.length > 0) {
+      return res.status(400).json({ error: 'Phone number already registered' });
+    }
+
+    // Create new user
+    const insertQuery = `
+      INSERT INTO users (email, phone, full_name, firebase_uid) 
+      VALUES ($1, $2, $3, $4) 
+      RETURNING *
+    `;
+    
+    const result = await pool.query(insertQuery, [
+      email,
+      phone,
+      fullName.trim(),
+      googleUid
+    ]);
+
+    const user = result.rows[0];
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    console.log(`✅ Google user registered successfully: ${email}`);
+
+    res.status(201).json({
+      message: 'Registration successful',
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        phone: user.phone,
+        fullName: user.full_name
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Complete Google registration error:', error);
+    res.status(500).json({ error: 'Failed to complete registration' });
+  }
+});
+
+// =====================================================
+// EXISTING OTP ENDPOINTS
+// =====================================================
+
 // POST /api/users/send-otp
 router.post('/send-otp', async (req, res) => {
   try {
@@ -36,7 +177,7 @@ router.post('/send-otp', async (req, res) => {
 
     otpStore.set(phone, { otp, expiresAt, attempts: 0 });
     
-    if (process.env.NODE_ENV === 'development') console.log(`📱 OTP generated for ${phone}`);
+    console.log(`📱 OTP for ${phone}: ${otp}`);
     
     res.json({ message: 'OTP sent successfully', otp: otp });
 
@@ -114,6 +255,7 @@ router.post('/verify-otp', async (req, res) => {
         id: user.id,
         phone: user.phone,
         fullName: user.full_name,
+        email: user.email,
         createdAt: user.created_at
       }
     });
@@ -149,7 +291,7 @@ function authenticateToken(req, res, next) {
 // GET /api/users/profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const query = 'SELECT id, phone, full_name, apartment_id, created_at FROM users WHERE id = $1';
+    const query = 'SELECT id, phone, email, full_name, apartment_id, created_at FROM users WHERE id = $1';
     const result = await pool.query(query, [req.user.userId]);
 
     if (result.rows.length === 0) {
@@ -160,6 +302,7 @@ router.get('/profile', authenticateToken, async (req, res) => {
       user: {
         id: result.rows[0].id,
         phone: result.rows[0].phone,
+        email: result.rows[0].email,
         fullName: result.rows[0].full_name,
         apartmentId: result.rows[0].apartment_id,
         createdAt: result.rows[0].created_at
@@ -189,6 +332,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
       user: {
         id: result.rows[0].id,
         phone: result.rows[0].phone,
+        email: result.rows[0].email,
         fullName: result.rows[0].full_name,
         createdAt: result.rows[0].created_at
       }
@@ -500,44 +644,5 @@ router.get('/distributor-upi', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to get distributor information' });
   }
 });
-router.post('/firebase-auth', async (req, res) => {
-  try {
-    const { phone, firebase_uid, full_name } = req.body;
-    
-    if (!phone || !firebase_uid) {
-      return res.status(400).json({ error: 'Phone and Firebase UID required' });
-    }
 
-    const userQuery = 'SELECT * FROM users WHERE phone = $1';
-    const userResult = await pool.query(userQuery, [phone]);
-
-    let user;
-    if (userResult.rows.length === 0) {
-      if (!full_name) {
-        return res.status(400).json({ 
-          error: 'Full name is required for new users',
-          requiresName: true
-        });
-      }
-
-      const insertResult = await pool.query(
-        'INSERT INTO users (phone, full_name, firebase_uid) VALUES ($1, $2, $3) RETURNING *',
-        [phone, full_name.trim(), firebase_uid]
-      );
-      user = insertResult.rows[0];
-    } else {
-      user = userResult.rows[0];
-    }
-
-    const token = jwt.sign(
-      { userId: user.id, phone: user.phone },
-      process.env.JWT_SECRET,
-      { expiresIn: '30d' }
-    );
-
-    res.json({ token, user: { id: user.id, phone: user.phone, fullName: user.full_name } });
-  } catch (error) {
-    res.status(500).json({ error: 'Authentication failed' });
-  }
-});
 module.exports = router;
