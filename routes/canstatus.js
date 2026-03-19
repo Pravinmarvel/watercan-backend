@@ -366,4 +366,72 @@ async function sendCanFilledNotification(userId, userName) {
   }
 }
 
+// =====================================================
+// PUT /api/can-status/fill/:userId
+// ✅ Called by DISTRIBUTOR to fill cans for a specific user
+// =====================================================
+router.put('/fill/:userId', authenticateToken, async (req, res) => {
+  try {
+    const distributorId = req.distributor?.distributorId;
+
+    if (!distributorId) {
+      return res.status(401).json({ error: 'Distributor authentication required' });
+    }
+
+    const userId = parseInt(req.params.userId);
+    if (isNaN(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    const { can_1_full, can_2_full, can_3_full } = req.body;
+
+    if (
+      typeof can_1_full !== 'boolean' ||
+      typeof can_2_full !== 'boolean' ||
+      typeof can_3_full !== 'boolean'
+    ) {
+      return res.status(400).json({ error: 'All can status values must be boolean' });
+    }
+
+    const userCheck = await pool.query(
+      'SELECT id, full_name FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, updated_at)
+       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id)
+       DO UPDATE SET
+         can_1_full = $2,
+         can_2_full = $3,
+         can_3_full = $4,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [userId, can_1_full, can_2_full, can_3_full]
+    );
+
+    console.log(`✅ Distributor ${distributorId} filled cans for user ${userId}`);
+
+    const wasFilled = can_1_full === true || can_2_full === true || can_3_full === true;
+    if (wasFilled) {
+      const userName = userCheck.rows[0].full_name;
+      sendCanFilledNotification(userId, userName).catch(() => {});
+    }
+
+    res.json({
+      message: 'Can status updated successfully',
+      canStatus: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Error in distributor fill route:', error);
+    res.status(500).json({ error: 'Failed to update can status' });
+  }
+});
+
 module.exports = router;
