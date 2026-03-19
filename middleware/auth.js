@@ -1,52 +1,289 @@
 const jwt = require('jsonwebtoken');
+const pool = require('../db');
 
-// ✅ SECURITY: Validate JWT_SECRET exists on startup
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET === '') {
-  console.error('❌ FATAL: JWT_SECRET environment variable is required');
-  console.error('Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
-  process.exit(1);
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const JWT_EXPIRES_IN = '7d'; // 7 days
+
+// ============================================
+// GENERATE JWT TOKEN
+// ============================================
+function generateToken(userId, userType = 'user') {
+  return jwt.sign(
+    { 
+      userId, 
+      userType,
+      iat: Math.floor(Date.now() / 1000)
+    },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN }
+  );
 }
 
-const JWT_SECRET = process.env.JWT_SECRET;
+// ============================================
+// VERIFY USER TOKEN
+// ============================================
+async function verifyUserToken(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
 
-function authenticateToken(req, res, next) {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({ error: 'Access token required' });
-  }
-
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.error('❌ Token verification error:', err.message);
-      }
-      return res.status(403).json({ error: 'Invalid or expired token' });
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ 
+        error: 'No token provided',
+        message: 'Authorization header required'
+      });
     }
-    req.user = user;
-    next();
-  });
-}
 
-function authenticateDistributor(req, res, next) {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
+    const token = authHeader.substring(7);
 
-  if (!token) {
-    return res.status(401).json({ error: 'Access token required' });
-  }
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      
+      // Check if user exists
+      const result = await pool.query(
+        'SELECT id, email, full_name, phone FROM users WHERE id = $1',
+        [decoded.userId]
+      );
 
-  jwt.verify(token, JWT_SECRET, (err, distributor) => {
-    if (err) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.error('❌ Distributor token error:', err.message);
+      if (result.rows.length === 0) {
+        return res.status(401).json({ 
+          error: 'Invalid token',
+          message: 'User not found'
+        });
       }
-      return res.status(403).json({ error: 'Invalid or expired token' });
+
+      req.user = {
+        id: decoded.userId,
+        ...result.rows[0]
+      };
+
+      next();
+    } catch (jwtError) {
+      if (jwtError.name === 'TokenExpiredError') {
+        // Token expired - client needs to refresh
+        return res.status(401).json({ 
+          error: 'Token expired',
+          message: 'Please log in again',
+          code: 'TOKEN_EXPIRED'
+        });
+      }
+
+      if (jwtError.name === 'JsonWebTokenError') {
+        return res.status(401).json({ 
+          error: 'Invalid token',
+          message: 'Authentication failed'
+        });
+      }
+
+      throw jwtError;
     }
-    req.distributor = distributor;
-    next();
-  });
+  } catch (error) {
+    console.error('❌ Auth middleware error:', error.message);
+    res.status(500).json({ 
+      error: 'Server error',
+      message: 'Authentication failed'
+    });
+  }
 }
 
-module.exports = { authenticateToken, authenticateDistributor, JWT_SECRET };
+// ============================================
+// VERIFY DISTRIBUTOR TOKEN
+// ============================================
+async function verifyDistributorToken(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ 
+        error: 'No token provided',
+        message: 'Authorization header required'
+      });
+    }
+
+    const token = authHeader.substring(7);
+
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      
+      // Check if distributor exists
+      const result = await pool.query(
+        'SELECT id, email, full_name, phone, apartment_id FROM distributors WHERE id = $1',
+        [decoded.userId]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(401).json({ 
+          error: 'Invalid token',
+          message: 'Distributor not found'
+        });
+      }
+
+      req.distributor = {
+        id: decoded.userId,
+        ...result.rows[0]
+      };
+
+      next();
+    } catch (jwtError) {
+      if (jwtError.name === 'TokenExpiredError') {
+        // Token expired - client needs to refresh
+        return res.status(401).json({ 
+          error: 'Token expired',
+          message: 'Please log in again',
+          code: 'TOKEN_EXPIRED'
+        });
+      }
+
+      if (jwtError.name === 'JsonWebTokenError') {
+        return res.status(401).json({ 
+          error: 'Invalid token',
+          message: 'Authentication failed'
+        });
+      }
+
+      throw jwtError;
+    }
+  } catch (error) {
+    console.error('❌ Distributor auth error:', error.message);
+    res.status(500).json({ 
+      error: 'Server error',
+      message: 'Authentication failed'
+    });
+  }
+}
+
+// ============================================
+// VERIFY USER OR DISTRIBUTOR TOKEN
+// ============================================
+async function verifyAnyToken(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ 
+        error: 'No token provided',
+        message: 'Authorization header required'
+      });
+    }
+
+    const token = authHeader.substring(7);
+
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      
+      if (decoded.userType === 'distributor') {
+        // Check distributor
+        const result = await pool.query(
+          'SELECT id, email, full_name, phone, apartment_id FROM distributors WHERE id = $1',
+          [decoded.userId]
+        );
+
+        if (result.rows.length === 0) {
+          return res.status(401).json({ 
+            error: 'Invalid token',
+            message: 'Distributor not found'
+          });
+        }
+
+        req.distributor = {
+          id: decoded.userId,
+          ...result.rows[0]
+        };
+        req.userType = 'distributor';
+      } else {
+        // Check user
+        const result = await pool.query(
+          'SELECT id, email, full_name, phone FROM users WHERE id = $1',
+          [decoded.userId]
+        );
+
+        if (result.rows.length === 0) {
+          return res.status(401).json({ 
+            error: 'Invalid token',
+            message: 'User not found'
+          });
+        }
+
+        req.user = {
+          id: decoded.userId,
+          ...result.rows[0]
+        };
+        req.userType = 'user';
+      }
+
+      next();
+    } catch (jwtError) {
+      if (jwtError.name === 'TokenExpiredError') {
+        return res.status(401).json({ 
+          error: 'Token expired',
+          message: 'Please log in again',
+          code: 'TOKEN_EXPIRED'
+        });
+      }
+
+      if (jwtError.name === 'JsonWebTokenError') {
+        return res.status(401).json({ 
+          error: 'Invalid token',
+          message: 'Authentication failed'
+        });
+      }
+
+      throw jwtError;
+    }
+  } catch (error) {
+    console.error('❌ Any auth error:', error.message);
+    res.status(500).json({ 
+      error: 'Server error',
+      message: 'Authentication failed'
+    });
+  }
+}
+
+// ============================================
+// REFRESH TOKEN ENDPOINT HELPER
+// ============================================
+async function refreshUserToken(userId) {
+  try {
+    // Verify user still exists
+    const result = await pool.query(
+      'SELECT id FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error('User not found');
+    }
+
+    // Generate new token
+    return generateToken(userId, 'user');
+  } catch (error) {
+    throw error;
+  }
+}
+
+async function refreshDistributorToken(distributorId) {
+  try {
+    // Verify distributor still exists
+    const result = await pool.query(
+      'SELECT id FROM distributors WHERE id = $1',
+      [distributorId]
+    );
+
+    if (result.rows.length === 0) {
+      throw new Error('Distributor not found');
+    }
+
+    // Generate new token
+    return generateToken(distributorId, 'distributor');
+  } catch (error) {
+    throw error;
+  }
+}
+
+module.exports = {
+  generateToken,
+  verifyUserToken,
+  verifyDistributorToken,
+  verifyAnyToken,
+  refreshUserToken,
+  refreshDistributorToken,
+};
