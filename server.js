@@ -1,5 +1,5 @@
 // =====================================================
-// WATERCAN BACKEND - PRODUCTION SERVER v3.0
+// WATERCAN BACKEND - PRODUCTION SERVER v3.1
 // =====================================================
 require('dotenv').config();
 const express = require('express');
@@ -15,7 +15,6 @@ const PORT = process.env.PORT || 3000;
 // =====================================================
 // ✅ CRITICAL FIX: TRUST PROXY FOR RENDER.COM
 // =====================================================
-// This fixes the "X-Forwarded-For" error
 app.set('trust proxy', 1);
 
 // =====================================================
@@ -44,15 +43,18 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false
 }));
 
-// ✅ FIXED RATE LIMITER - Works with trust proxy
+// ✅ FIXED RATE LIMITER
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.',
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  message: 'Too many requests, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
-  // ✅ This is the key fix for the proxy issue
-  validate: { xForwardedForHeader: false }
+  validate: { xForwardedForHeader: false },
+  skip: (req) => {
+    // Skip rate limiting for health checks
+    return req.path === '/health' || req.path === '/';
+  }
 });
 
 app.use('/api/', limiter);
@@ -61,8 +63,8 @@ app.use('/api/', limiter);
 // CORS CONFIGURATION
 // =====================================================
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
@@ -74,11 +76,13 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // =====================================================
-// REQUEST LOGGING
+// REQUEST LOGGING (Simplified for production)
 // =====================================================
 app.use((req, res, next) => {
-  const timestamp = new Date().toISOString();
-  console.log(`${timestamp} - ${req.method} ${req.path}`);
+  // Only log API requests, not health checks
+  if (!req.path.includes('health')) {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  }
   next();
 });
 
@@ -88,43 +92,36 @@ app.use((req, res, next) => {
 app.get('/', (req, res) => {
   res.json({
     name: 'WaterCan Backend API',
-    version: '3.0.0',
+    version: '3.1.0',
     status: 'running',
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      health: '/health',
-      users: '/api/users',
-      orders: '/api/orders',
-      canStatus: '/api/can-status',
-      distributors: '/api/distributors',
-      returns: '/api/returns',
-      subscriptions: '/api/subscriptions',
-      payments: '/api/payments',
-      addresses: '/api/addresses',
-      apartments: '/api/apartments'
-    }
+    timestamp: new Date().toISOString()
   });
 });
 
 app.get('/health', async (req, res) => {
   try {
-    // Check database connection
     await pool.query('SELECT 1');
-    
     res.json({ 
       status: 'healthy',
       timestamp: new Date().toISOString(),
       database: 'connected',
-      firebase: admin.apps.length > 0 ? 'connected' : 'disconnected',
-      uptime: process.uptime()
+      firebase: admin.apps.length > 0 ? 'connected' : 'disconnected'
     });
   } catch (error) {
     res.status(503).json({
       status: 'unhealthy',
-      timestamp: new Date().toISOString(),
-      database: 'disconnected',
-      error: error.message
+      database: 'disconnected'
     });
+  }
+});
+
+// ✅ FIX: Handle HEAD requests for health checks
+app.head('/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.status(200).end();
+  } catch (error) {
+    res.status(503).end();
   }
 });
 
@@ -157,38 +154,23 @@ app.use('/api/apartments', apartmentRoutes);
 
 // 404 handler
 app.use((req, res) => {
-  console.log(`❌ 404 - Route not found: ${req.method} ${req.path}`);
   res.status(404).json({ 
     error: 'Route not found',
-    path: req.path,
-    method: req.method,
-    availableEndpoints: [
-      '/api/users',
-      '/api/orders',
-      '/api/can-status',
-      '/api/distributors',
-      '/api/returns',
-      '/api/subscriptions',
-      '/api/payments',
-      '/api/addresses',
-      '/api/apartments'
-    ]
+    path: req.path
   });
 });
 
 // Global error handler
 app.use((err, req, res, next) => {
-  console.error('❌ Error:', err);
+  console.error('❌ Error:', err.message);
   
-  // Handle rate limit errors
+  // Silently handle rate limiter proxy errors
   if (err.code === 'ERR_ERL_UNEXPECTED_X_FORWARDED_FOR') {
-    console.error('⚠️ Rate limiter proxy issue detected but handled');
     return next();
   }
   
   res.status(err.status || 500).json({
-    error: err.message || 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    error: err.message || 'Internal server error'
   });
 });
 
@@ -198,24 +180,17 @@ app.use((err, req, res, next) => {
 async function startServer() {
   try {
     console.log('\n======================================================================');
-    console.log('🚀 WaterCan Server v3.0 - PRODUCTION READY');
+    console.log('🚀 WaterCan Server v3.1 - PRODUCTION');
     console.log('======================================================================');
     
-    console.log('🔄 Initializing database...');
     await initializeDatabase();
-    console.log('✅ Database initialized');
     
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`📍 Port: ${PORT}`);
       console.log(`📍 Environment: ${process.env.NODE_ENV || 'production'}`);
-      console.log(`📍 Health: http://localhost:${PORT}/health`);
-      console.log('🔐 Security:');
-      console.log('   ✅ Helmet enabled');
-      console.log('   ✅ Rate limiting active');
-      console.log('   ✅ CORS configured');
-      console.log('   ✅ Input validation enabled');
-      console.log(`🔔 Firebase: ${admin.apps.length > 0 ? '✅ Ready' : '❌ Not configured'}`);
-      console.log('📋 Routes: 9 mounted');
+      console.log(`🔐 Security: ✅ Enabled`);
+      console.log(`🔔 Firebase: ${admin.apps.length > 0 ? '✅' : '❌'}`);
+      console.log(`📋 Routes: 9 mounted`);
       console.log('======================================================================\n');
     });
   } catch (error) {
@@ -227,34 +202,18 @@ async function startServer() {
 // =====================================================
 // GRACEFUL SHUTDOWN
 // =====================================================
-const gracefulShutdown = async (signal) => {
-  console.log(`\n👋 ${signal} received. Shutting down gracefully...`);
-  
+const shutdown = async (signal) => {
+  console.log(`\n👋 ${signal} - Shutting down...`);
   try {
-    // Close database connections
     await pool.end();
-    console.log('✅ Database connections closed');
-    
     process.exit(0);
   } catch (error) {
-    console.error('❌ Error during shutdown:', error);
     process.exit(1);
   }
 };
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-  console.error('❌ Uncaught Exception:', error);
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
-  process.exit(1);
-});
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 // Start the server
 startServer();
