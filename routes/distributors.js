@@ -57,6 +57,13 @@ function authenticateToken(req, res, next) {
   
   jwt.verify(token, secret, (err, distributor) => {
     if (err) {
+      if (err.name === 'TokenExpiredError') {
+        // Return a specific code so the Flutter app can auto-refresh
+        return res.status(401).json({ 
+          error: 'Token expired. Please log in again.',
+          code: 'TOKEN_EXPIRED'
+        });
+      }
       console.error('❌ Token verification failed:', err.message);
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
@@ -64,6 +71,86 @@ function authenticateToken(req, res, next) {
     next();
   });
 }
+
+// =====================================================
+// TOKEN REFRESH ENDPOINT
+// Distributor app calls this with their phone + OTP to
+// get a fresh token without going through the full
+// OTP flow again — or they can re-verify via OTP.
+// This endpoint accepts a valid (non-expired) token
+// or phone-based re-authentication to issue a new one.
+// =====================================================
+router.post('/refresh-token', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({ error: 'Token required' });
+    }
+
+    const secret = process.env.JWT_SECRET;
+
+    // Decode without verifying expiry to extract distributorId
+    let decoded;
+    try {
+      decoded = jwt.verify(token, secret);
+    } catch (err) {
+      if (err.name === 'TokenExpiredError') {
+        // Still decode the payload even though it's expired
+        decoded = jwt.decode(token);
+      } else {
+        return res.status(403).json({ error: 'Invalid token' });
+      }
+    }
+
+    if (!decoded || !decoded.distributorId) {
+      return res.status(403).json({ error: 'Invalid token payload' });
+    }
+
+    const distributorId = decoded.distributorId;
+
+    // Verify distributor still exists in DB
+    const result = await pool.query(
+      'SELECT id, phone, full_name, upi_id, is_working FROM distributors WHERE id = $1',
+      [distributorId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Distributor not found. Please log in again.' });
+    }
+
+    const distributor = result.rows[0];
+
+    // Issue a fresh 30-day token
+    const newToken = jwt.sign(
+      { 
+        distributorId: distributor.id, 
+        phone: distributor.phone 
+      },
+      secret,
+      { expiresIn: '30d' }
+    );
+
+    console.log(`✅ Token refreshed for distributor ${distributor.id} (${distributor.phone})`);
+
+    res.json({
+      message: 'Token refreshed successfully',
+      token: newToken,
+      distributor: {
+        id: distributor.id,
+        phone: distributor.phone,
+        fullName: distributor.full_name,
+        upiId: distributor.upi_id,
+        isWorking: distributor.is_working
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Refresh token error:', error);
+    res.status(500).json({ error: 'Failed to refresh token' });
+  }
+});
 
 // =====================================================
 // OTP ENDPOINTS

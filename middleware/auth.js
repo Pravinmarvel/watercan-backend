@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const pool = require('../db');
+const { pool } = require('../db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
 const JWT_EXPIRES_IN = '7d'; // 7 days

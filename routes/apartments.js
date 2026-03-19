@@ -193,7 +193,6 @@ router.get('/distributor/:distributorId', async (req, res) => {
   }
 });
 
-module.exports = router;
 // =====================================================
 // GET DISTRIBUTOR WORKING STATUS - NEW
 // =====================================================

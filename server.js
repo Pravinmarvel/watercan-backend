@@ -74,6 +74,8 @@ const apartmentsRoutes = require('./routes/apartments');
 const subscriptionsRoutes = require('./routes/subscriptions');
 const ordersRoutes = require('./routes/orders');
 const returnsRoutes = require('./routes/returns');
+const canStatusRoutes = require('./routes/canstatus');
+const paymentsRoutes = require('./routes/payments');
 
 app.use('/api/users', usersRoutes);
 app.use('/api/distributors', distributorsRoutes);
@@ -81,6 +83,8 @@ app.use('/api/apartments', apartmentsRoutes);
 app.use('/api/subscriptions', subscriptionsRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/returns', returnsRoutes);
+app.use('/api/can-status', canStatusRoutes);
+app.use('/api/payments', paymentsRoutes);
 
 // ============================================
 // ERROR HANDLING
@@ -135,7 +139,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'production'}`);
   console.log('🔐 Security: ✅ Enabled');
   console.log('🔔 Firebase: ✅');
-  console.log('📋 Routes: 9 mounted');
+  console.log('📋 Routes: 8 mounted');
   console.log('🔄 JWT: Auto-refresh enabled');
   console.log('======================================================================');
 });
