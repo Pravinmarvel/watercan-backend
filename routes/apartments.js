@@ -31,7 +31,7 @@ router.get('/:apartmentId/residents', async (req, res) => {
       cycleEnd = new Date(now.getFullYear(), now.getMonth(), lastDay);
     }
     
-    // ✅ CRITICAL QUERY: Gets residents with TOTAL cans including additional!
+    // ✅ CRITICAL QUERY: Gets residents with subscription cans, additional cans, and can status
     const query = `
       SELECT 
         u.id,
@@ -43,6 +43,7 @@ router.get('/:apartmentId/residents', async (req, res) => {
         cs.can_2_full,
         cs.can_3_full,
         cs.updated_at as can_status_updated,
+        COALESCE(cs.additional_cans, 0) as additional_cans,
         COALESCE(SUM(o.quantity), 0) as total_cans_cycle
       FROM users u
       LEFT JOIN addresses a ON a.user_id = u.id
@@ -53,7 +54,7 @@ router.get('/:apartmentId/residents', async (req, res) => {
       WHERE u.apartment_id = $1
       GROUP BY u.id, u.phone, u.full_name, u.apartment_id, 
                a.address_line, cs.can_1_full, cs.can_2_full, 
-               cs.can_3_full, cs.updated_at
+               cs.can_3_full, cs.updated_at, cs.additional_cans
       ORDER BY u.full_name ASC
     `;
     
@@ -85,6 +86,8 @@ router.get('/:apartmentId/residents', async (req, res) => {
           can3Full: row.can_3_full,
           updatedAt: row.can_status_updated
         },
+        // ✅ additional_cans: live count from can_status (resets to 0 when distributor fills)
+        additionalCans: parseInt(row.additional_cans) || 0,
         totalCansThisCycle: parseInt(row.total_cans_cycle)
       }))
     });

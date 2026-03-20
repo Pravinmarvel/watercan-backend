@@ -434,4 +434,200 @@ router.put('/fill/:userId', authenticateToken, async (req, res) => {
   }
 });
 
+
+// =====================================================
+// ✅ FCM NOTIFICATION: Additional Cans Filled by Distributor
+// =====================================================
+async function sendAdditionalCanFilledNotification(userId, userName, count) {
+  try {
+    const userQuery = await pool.query(
+      'SELECT fcm_token FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userQuery.rows.length === 0 || !userQuery.rows[0].fcm_token) {
+      console.log(`ℹ️ No FCM token for user ${userId}`);
+      return;
+    }
+
+    const fcmToken = userQuery.rows[0].fcm_token;
+
+    const distributorQuery = await pool.query(`
+      SELECT d.full_name as distributor_name
+      FROM users u
+      JOIN apartment_groups ag ON u.apartment_id = ag.id
+      JOIN distributors d ON ag.distributor_id = d.id
+      WHERE u.id = $1
+    `, [userId]);
+
+    const distributorName = distributorQuery.rows[0]?.distributor_name || 'Your distributor';
+
+    const now = new Date();
+    const currentTime = now.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'Asia/Kolkata'
+    });
+
+    await admin.messaging().send({
+      token: fcmToken,
+      notification: {
+        title: `💧 Additional Cans Delivered!`,
+        body: `${distributorName} delivered your ${count} additional can${count > 1 ? 's' : ''} at ${currentTime}. Enjoy! 🌊`
+      },
+      data: {
+        type: 'additional_can_filled',
+        userId: userId.toString(),
+        distributorName: distributorName,
+        filledCount: count.toString(),
+        timestamp: now.toISOString(),
+        time: currentTime
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId: 'watercan_channel',
+          icon: '@mipmap/ic_launcher',
+          color: '#03A9F4',
+          defaultSound: true,
+          defaultVibrateTimings: true
+        }
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            badge: 1,
+            'content-available': 1
+          }
+        }
+      }
+    });
+
+    console.log(`✅ Additional can notification sent to user ${userId}: ${distributorName} filled ${count} extra can(s) at ${currentTime}`);
+
+  } catch (error) {
+    console.error(`❌ Additional can notification error for user ${userId}:`, error.message);
+  }
+}
+
+
+// =====================================================
+// PUT /api/can-status/fill-additional/:userId
+// ✅ Called by DISTRIBUTOR to mark additional cans as filled
+//    Resets additional_cans to 0 and sends FCM notification
+// =====================================================
+router.put('/fill-additional/:userId', authenticateToken, async (req, res) => {
+  try {
+    const distributorId = req.distributor?.distributorId;
+
+    if (!distributorId) {
+      return res.status(401).json({ error: 'Distributor authentication required' });
+    }
+
+    const userId = parseInt(req.params.userId);
+    if (isNaN(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    // Get user info and current additional_cans count before resetting
+    const userCheck = await pool.query(
+      `SELECT u.id, u.full_name, COALESCE(cs.additional_cans, 0) as additional_cans
+       FROM users u
+       LEFT JOIN can_status cs ON cs.user_id = u.id
+       WHERE u.id = $1`,
+      [userId]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const additionalCount = parseInt(userCheck.rows[0].additional_cans) || 0;
+    const userName = userCheck.rows[0].full_name;
+
+    // ✅ Reset additional_cans to 0 in can_status (upsert)
+    const result = await pool.query(
+      `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, additional_cans, updated_at)
+       VALUES ($1, true, true, true, 0, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id)
+       DO UPDATE SET
+         additional_cans = 0,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [userId]
+    );
+
+    console.log(`✅ Distributor ${distributorId} filled ${additionalCount} additional can(s) for user ${userId} (${userName})`);
+
+    // ✅ Send FCM notification for additional cans
+    sendAdditionalCanFilledNotification(userId, userName, additionalCount).catch(() => {});
+
+    res.json({
+      message: `Additional cans filled successfully. Reset to 0.`,
+      filledCount: additionalCount,
+      canStatus: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Error in fill-additional route:', error);
+    res.status(500).json({ error: 'Failed to fill additional cans' });
+  }
+});
+
+// =====================================================
+// PUT /api/can-status/set-additional/:userId
+// ✅ Called by USER APP (createwatercan.dart) when they increment/decrement
+//    Sets additional_cans = requested count (0–3)
+// =====================================================
+router.put('/set-additional/:userId', authenticateToken, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    if (isNaN(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    // Only allow the user themselves to set their additional cans
+    if (req.user?.userId !== userId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const { additional_cans } = req.body;
+
+    if (typeof additional_cans !== 'number' || additional_cans < 0 || additional_cans > 3) {
+      return res.status(400).json({ error: 'additional_cans must be a number between 0 and 3' });
+    }
+
+    const userCheck = await pool.query('SELECT id FROM users WHERE id = $1', [userId]);
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, additional_cans, updated_at)
+       VALUES ($1, true, true, true, $2, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id)
+       DO UPDATE SET
+         additional_cans = $2,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [userId, additional_cans]
+    );
+
+    console.log(`✅ User ${userId} set additional_cans = ${additional_cans}`);
+
+    res.json({
+      message: 'Additional cans updated successfully',
+      additionalCans: result.rows[0].additional_cans,
+      canStatus: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error('❌ Error setting additional cans:', error);
+    res.status(500).json({ error: 'Failed to set additional cans' });
+  }
+});
+
 module.exports = router;

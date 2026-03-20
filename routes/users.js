@@ -645,4 +645,55 @@ router.get('/distributor-upi', authenticateToken, async (req, res) => {
   }
 });
 
+
+// =====================================================
+// PUT /api/users/:userId/additional-cans
+// ✅ Called by createwatercan.dart when user increments/decrements
+//    Writes the count directly into can_status.additional_cans
+// =====================================================
+router.put('/:userId/additional-cans', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (req.user.userId !== parseInt(userId)) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const { additional_cans } = req.body;
+
+    if (typeof additional_cans !== 'number' || additional_cans < 0 || additional_cans > 3) {
+      return res.status(400).json({ error: 'additional_cans must be a number between 0 and 3' });
+    }
+
+    const userCheck = await pool.query('SELECT id FROM users WHERE id = $1', [userId]);
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // ✅ Upsert into can_status — creates the row if it doesn't exist yet
+    const result = await pool.query(
+      `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, additional_cans, updated_at)
+       VALUES ($1, true, true, true, $2, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id)
+       DO UPDATE SET
+         additional_cans = $2,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING additional_cans`,
+      [userId, additional_cans]
+    );
+
+    console.log(`✅ User ${userId} set additional_cans = ${additional_cans}`);
+
+    res.json({
+      success: true,
+      message: 'Additional cans updated',
+      additionalCans: result.rows[0].additional_cans
+    });
+
+  } catch (error) {
+    console.error('❌ Set additional cans error:', error);
+    res.status(500).json({ error: 'Failed to update additional cans' });
+  }
+});
+
 module.exports = router;
