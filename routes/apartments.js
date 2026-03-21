@@ -31,7 +31,8 @@ router.get('/:apartmentId/residents', async (req, res) => {
       cycleEnd = new Date(now.getFullYear(), now.getMonth(), lastDay);
     }
     
-    // ✅ CRITICAL QUERY: Gets residents with subscription cans, additional cans, and can status
+    // ✅ CRITICAL QUERY: Gets residents with subscription cans, additional cans, can status,
+    //    total subscription count (for new/renewed detection), and return history
     const query = `
       SELECT 
         u.id,
@@ -44,7 +45,11 @@ router.get('/:apartmentId/residents', async (req, res) => {
         cs.can_3_full,
         cs.updated_at as can_status_updated,
         COALESCE(cs.additional_cans, 0) as additional_cans,
-        COALESCE(SUM(o.quantity), 0) as total_cans_cycle
+        COALESCE(SUM(o.quantity), 0) as total_cans_cycle,
+        -- ✅ NEW: Count all-time subscriptions for this user (0 = never subscribed)
+        (SELECT COUNT(*) FROM subscriptions s WHERE s.user_id = u.id) as total_subscriptions,
+        -- ✅ NEW: Count collected returns (> 0 means user has returned cans before)
+        (SELECT COUNT(*) FROM can_returns cr WHERE cr.user_id = u.id AND cr.status = 'collected') as total_collected_returns
       FROM users u
       LEFT JOIN addresses a ON a.user_id = u.id
       LEFT JOIN can_status cs ON cs.user_id = u.id
@@ -88,7 +93,16 @@ router.get('/:apartmentId/residents', async (req, res) => {
         },
         // ✅ additional_cans: live count from can_status (resets to 0 when distributor fills)
         additionalCans: parseInt(row.additional_cans) || 0,
-        totalCansThisCycle: parseInt(row.total_cans_cycle)
+        totalCansThisCycle: parseInt(row.total_cans_cycle),
+        // ✅ NEW: for New/Renewed badge in distributor app
+        // 'new'     = never subscribed at all
+        // 'renewed' = has returned cans before (returned + buying again)
+        // null      = normal active subscriber
+        customerStatus: parseInt(row.total_subscriptions) === 0
+          ? 'new'
+          : parseInt(row.total_collected_returns) > 0
+            ? 'renewed'
+            : null
       }))
     });
     
