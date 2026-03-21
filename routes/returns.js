@@ -78,10 +78,12 @@ router.post('/create', authenticateToken, async (req, res) => {
       });
     }
 
+    const { instructions } = req.body; // optional field
+
     // Create return request
     const insertQuery = `
-      INSERT INTO can_returns (user_id, quantity, pickup_date, pickup_address, status, created_at)
-      VALUES ($1, $2, $3, $4, 'pending', CURRENT_TIMESTAMP)
+      INSERT INTO can_returns (user_id, quantity, pickup_date, pickup_address, instructions, status, created_at)
+      VALUES ($1, $2, $3, $4, $5, 'pending', CURRENT_TIMESTAMP)
       RETURNING *
     `;
     
@@ -89,7 +91,8 @@ router.post('/create', authenticateToken, async (req, res) => {
       userId,
       quantity,
       pickupDate,
-      pickupAddress.trim()
+      pickupAddress.trim(),
+      instructions ? instructions.trim() : null
     ]);
 
     console.log(`✅ Return request created: User ${userId}, ID ${result.rows[0].id}, Qty ${quantity}`);
@@ -199,6 +202,7 @@ router.get('/pending', authenticateToken, async (req, res) => {
         quantity: row.quantity,
         pickupDate: row.pickup_date,
         pickupAddress: row.pickup_address,
+        instructions: row.instructions,
         status: row.status,
         createdAt: row.created_at
       }))
@@ -343,6 +347,130 @@ router.get('/stats', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('❌ Get stats error:', error);
     res.status(500).json({ error: 'Failed to get statistics' });
+  }
+});
+
+
+// =====================================================
+// PUT /api/returns/:returnId/pick
+// ✅ Distributor marks return as PICKED UP
+//    → Sets all 3 cans to EMPTY (false) in can_status
+//    → Sends FCM notification to user
+//    → Updates return status to 'collected'
+// =====================================================
+router.put('/:returnId/pick', authenticateToken, async (req, res) => {
+  try {
+    const { returnId } = req.params;
+    const distributorId = req.distributor?.distributorId;
+
+    if (!distributorId) {
+      return res.status(401).json({ error: 'Distributor authentication required' });
+    }
+
+    console.log(`📤 Distributor ${distributorId} picking up return request ${returnId}`);
+
+    // ── Get the return request ──
+    const checkQuery = `
+      SELECT cr.*, u.full_name, u.fcm_token
+      FROM can_returns cr
+      JOIN users u ON cr.user_id = u.id
+      WHERE cr.id = $1 AND cr.status = 'pending'
+    `;
+    const checkResult = await pool.query(checkQuery, [returnId]);
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Return request not found or already collected' });
+    }
+
+    const returnRow = checkResult.rows[0];
+    const userId = returnRow.user_id;
+    const userName = returnRow.full_name;
+    const quantity = returnRow.quantity;
+
+    // ── Mark return as collected ──
+    await pool.query(
+      `UPDATE can_returns 
+       SET status = 'collected', updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1`,
+      [returnId]
+    );
+
+    // ── Set all 3 cans to EMPTY (false) in can_status ──
+    await pool.query(
+      `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, updated_at)
+       VALUES ($1, false, false, false, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id)
+       DO UPDATE SET
+         can_1_full = false,
+         can_2_full = false,
+         can_3_full = false,
+         updated_at = CURRENT_TIMESTAMP`,
+      [userId]
+    );
+
+    console.log(`✅ Return ${returnId} picked up — user ${userId} cans set to EMPTY`);
+
+    // ── Send FCM notification to user ──
+    if (returnRow.fcm_token) {
+      try {
+        const admin = require('firebase-admin');
+        const now = new Date();
+        const currentTime = now.toLocaleTimeString('en-IN', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true,
+          timeZone: 'Asia/Kolkata'
+        });
+
+        await admin.messaging().send({
+          token: returnRow.fcm_token,
+          notification: {
+            title: '📦 Cans Collected!',
+            body: `Your ${quantity} empty can${quantity > 1 ? 's have' : ' has'} been picked up at ${currentTime}. New cans coming soon! 🚰`
+          },
+          data: {
+            type: 'cans_collected',
+            returnId: returnId.toString(),
+            userId: userId.toString(),
+            quantity: quantity.toString(),
+            timestamp: now.toISOString()
+          },
+          android: {
+            priority: 'high',
+            notification: {
+              sound: 'default',
+              channelId: 'watercan_channel',
+              icon: '@mipmap/ic_launcher',
+              color: '#03A9F4',
+              defaultSound: true,
+              defaultVibrateTimings: true
+            }
+          },
+          apns: {
+            payload: {
+              aps: { sound: 'default', badge: 1, 'content-available': 1 }
+            }
+          }
+        });
+
+        console.log(`🔔 FCM notification sent to user ${userId}: cans picked up`);
+      } catch (fcmErr) {
+        console.error(`⚠️ FCM error for user ${userId}:`, fcmErr.message);
+        // Non-fatal — pickup still succeeded
+      }
+    }
+
+    res.json({
+      message: 'Cans picked up successfully. User notified and cans set to empty.',
+      returnId: parseInt(returnId),
+      userId,
+      userName,
+      quantity
+    });
+
+  } catch (error) {
+    console.error('❌ Pick up return error:', error);
+    res.status(500).json({ error: 'Failed to mark return as picked up' });
   }
 });
 
