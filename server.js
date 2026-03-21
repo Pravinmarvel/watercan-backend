@@ -68,23 +68,23 @@ app.head('/health', (req, res) => {
 // ============================================
 // ROUTES
 // ============================================
-const usersRoutes = require('./routes/users');
+const usersRoutes        = require('./routes/users');
 const distributorsRoutes = require('./routes/distributors');
-const apartmentsRoutes = require('./routes/apartments');
-const subscriptionsRoutes = require('./routes/subscriptions');
-const ordersRoutes = require('./routes/orders');
-const returnsRoutes = require('./routes/returns');
-const canStatusRoutes = require('./routes/canstatus'); // ✅ ADDED
-const paymentsRoutes = require('./routes/payments');   // ✅ ADDED
+const apartmentsRoutes   = require('./routes/apartments');
+const subscriptionsRoutes= require('./routes/subscriptions');
+const ordersRoutes       = require('./routes/orders');
+const returnsRoutes      = require('./routes/returns');
+const canStatusRoutes    = require('./routes/canstatus');   // ✅ ADDED
+const paymentsRoutes     = require('./routes/payments');    // ✅ ADDED
 
-app.use('/api/users', usersRoutes);
-app.use('/api/distributors', distributorsRoutes);
-app.use('/api/apartments', apartmentsRoutes);
+app.use('/api/users',         usersRoutes);
+app.use('/api/distributors',  distributorsRoutes);
+app.use('/api/apartments',    apartmentsRoutes);
 app.use('/api/subscriptions', subscriptionsRoutes);
-app.use('/api/orders', ordersRoutes);
-app.use('/api/returns', returnsRoutes);
-app.use('/api/can-status', canStatusRoutes); // ✅ ADDED
-app.use('/api/payments', paymentsRoutes);   // ✅ ADDED
+app.use('/api/orders',        ordersRoutes);
+app.use('/api/returns',       returnsRoutes);
+app.use('/api/can-status',    canStatusRoutes);  // ✅ ADDED
+app.use('/api/payments',      paymentsRoutes);   // ✅ ADDED
 
 // ============================================
 // ERROR HANDLING

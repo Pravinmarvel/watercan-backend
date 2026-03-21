@@ -37,18 +37,15 @@ function authenticateToken(req, res, next) {
 // =====================================================
 router.post('/create', authenticateToken, async (req, res) => {
   try {
-    const { quantity, pickupDate, pickupAddress } = req.body;
+    const { quantity, pickupDate, pickupAddress, instructions } = req.body;
     const userId = req.user?.userId;
 
     if (!userId) {
       return res.status(401).json({ error: 'User authentication required' });
     }
 
-    // Validation
     if (!quantity || quantity < 1 || quantity > 3) {
-      return res.status(400).json({ 
-        error: 'Quantity must be between 1 and 3' 
-      });
+      return res.status(400).json({ error: 'Quantity must be between 1 and 3' });
     }
 
     if (!pickupDate) {
@@ -59,34 +56,14 @@ router.post('/create', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Pickup address is required' });
     }
 
-    console.log(`📤 Creating return request for user ${userId}:`, {
-      quantity,
-      pickupDate,
-      pickupAddress: pickupAddress.substring(0, 50)
-    });
+    console.log(`📤 Creating return request for user ${userId}: qty=${quantity}`);
 
-    // Check if user has pending returns
-    const existingQuery = `
-      SELECT id FROM can_returns 
-      WHERE user_id = $1 AND status = 'pending'
-    `;
-    const existing = await pool.query(existingQuery, [userId]);
-
-    if (existing.rows.length > 0) {
-      return res.status(400).json({ 
-        error: 'You already have a pending return request' 
-      });
-    }
-
-    const { instructions } = req.body; // optional field
-
-    // Create return request
     const insertQuery = `
       INSERT INTO can_returns (user_id, quantity, pickup_date, pickup_address, instructions, status, created_at)
       VALUES ($1, $2, $3, $4, $5, 'pending', CURRENT_TIMESTAMP)
       RETURNING *
     `;
-    
+
     const result = await pool.query(insertQuery, [
       userId,
       quantity,
@@ -95,7 +72,7 @@ router.post('/create', authenticateToken, async (req, res) => {
       instructions ? instructions.trim() : null
     ]);
 
-    console.log(`✅ Return request created: User ${userId}, ID ${result.rows[0].id}, Qty ${quantity}`);
+    console.log(`✅ Return request created: ID ${result.rows[0].id}, User ${userId}, Qty ${quantity}`);
 
     res.status(201).json({
       message: 'Return request created successfully',
@@ -104,6 +81,7 @@ router.post('/create', authenticateToken, async (req, res) => {
         quantity: result.rows[0].quantity,
         pickupDate: result.rows[0].pickup_date,
         pickupAddress: result.rows[0].pickup_address,
+        instructions: result.rows[0].instructions,
         status: result.rows[0].status,
         createdAt: result.rows[0].created_at
       }
@@ -111,10 +89,7 @@ router.post('/create', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Create return error:', error);
-    res.status(500).json({ 
-      error: 'Failed to create return request',
-      details: error.message 
-    });
+    res.status(500).json({ error: 'Failed to create return request', details: error.message });
   }
 });
 
@@ -353,10 +328,7 @@ router.get('/stats', authenticateToken, async (req, res) => {
 
 // =====================================================
 // PUT /api/returns/:returnId/pick
-// ✅ Distributor marks return as PICKED UP
-//    → Sets all 3 cans to EMPTY (false) in can_status
-//    → Sends FCM notification to user
-//    → Updates return status to 'collected'
+// Distributor picked up cans → sets all cans to EMPTY, sends FCM to user
 // =====================================================
 router.put('/:returnId/pick', authenticateToken, async (req, res) => {
   try {
@@ -367,11 +339,12 @@ router.put('/:returnId/pick', authenticateToken, async (req, res) => {
       return res.status(401).json({ error: 'Distributor authentication required' });
     }
 
-    console.log(`📤 Distributor ${distributorId} picking up return request ${returnId}`);
+    console.log(`📦 Distributor ${distributorId} picking up return ${returnId}`);
 
-    // ── Get the return request ──
+    // Fetch return + user FCM token in one query
     const checkQuery = `
-      SELECT cr.*, u.full_name, u.fcm_token
+      SELECT cr.id, cr.user_id, cr.quantity, cr.status,
+             u.full_name, u.fcm_token
       FROM can_returns cr
       JOIN users u ON cr.user_id = u.id
       WHERE cr.id = $1 AND cr.status = 'pending'
@@ -382,86 +355,65 @@ router.put('/:returnId/pick', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Return request not found or already collected' });
     }
 
-    const returnRow = checkResult.rows[0];
-    const userId = returnRow.user_id;
-    const userName = returnRow.full_name;
-    const quantity = returnRow.quantity;
+    const ret = checkResult.rows[0];
+    const userId   = ret.user_id;
+    const userName = ret.full_name;
+    const quantity = ret.quantity;
 
-    // ── Mark return as collected ──
+    // Mark return as collected
     await pool.query(
-      `UPDATE can_returns 
-       SET status = 'collected', updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1`,
+      `UPDATE can_returns SET status = 'collected', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [returnId]
     );
 
-    // ── Set all 3 cans to EMPTY (false) in can_status ──
+    // Set all 3 cans to EMPTY (false) for the user
     await pool.query(
       `INSERT INTO can_status (user_id, can_1_full, can_2_full, can_3_full, updated_at)
        VALUES ($1, false, false, false, CURRENT_TIMESTAMP)
-       ON CONFLICT (user_id)
-       DO UPDATE SET
-         can_1_full = false,
-         can_2_full = false,
-         can_3_full = false,
-         updated_at = CURRENT_TIMESTAMP`,
+       ON CONFLICT (user_id) DO UPDATE SET
+         can_1_full  = false,
+         can_2_full  = false,
+         can_3_full  = false,
+         updated_at  = CURRENT_TIMESTAMP`,
       [userId]
     );
 
-    console.log(`✅ Return ${returnId} picked up — user ${userId} cans set to EMPTY`);
+    console.log(`✅ Return ${returnId} picked — user ${userId} cans set to EMPTY`);
 
-    // ── Send FCM notification to user ──
-    if (returnRow.fcm_token) {
+    // Send FCM notification to user
+    if (ret.fcm_token) {
       try {
         const admin = require('firebase-admin');
         const now = new Date();
-        const currentTime = now.toLocaleTimeString('en-IN', {
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true,
-          timeZone: 'Asia/Kolkata'
+        const timeStr = now.toLocaleTimeString('en-IN', {
+          hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata'
         });
-
         await admin.messaging().send({
-          token: returnRow.fcm_token,
+          token: ret.fcm_token,
           notification: {
             title: '📦 Cans Collected!',
-            body: `Your ${quantity} empty can${quantity > 1 ? 's have' : ' has'} been picked up at ${currentTime}. New cans coming soon! 🚰`
+            body: `Your ${quantity} empty can${quantity > 1 ? 's have' : ' has'} been picked up at ${timeStr}. Fresh cans coming soon! 🚰`
           },
           data: {
             type: 'cans_collected',
             returnId: returnId.toString(),
             userId: userId.toString(),
-            quantity: quantity.toString(),
-            timestamp: now.toISOString()
+            quantity: quantity.toString()
           },
           android: {
             priority: 'high',
-            notification: {
-              sound: 'default',
-              channelId: 'watercan_channel',
-              icon: '@mipmap/ic_launcher',
-              color: '#03A9F4',
-              defaultSound: true,
-              defaultVibrateTimings: true
-            }
+            notification: { sound: 'default', channelId: 'watercan_channel', color: '#FF5722' }
           },
-          apns: {
-            payload: {
-              aps: { sound: 'default', badge: 1, 'content-available': 1 }
-            }
-          }
+          apns: { payload: { aps: { sound: 'default', badge: 1 } } }
         });
-
-        console.log(`🔔 FCM notification sent to user ${userId}: cans picked up`);
+        console.log(`🔔 FCM sent to user ${userId}: cans picked up`);
       } catch (fcmErr) {
-        console.error(`⚠️ FCM error for user ${userId}:`, fcmErr.message);
-        // Non-fatal — pickup still succeeded
+        console.error(`⚠️ FCM error:`, fcmErr.message);
       }
     }
 
     res.json({
-      message: 'Cans picked up successfully. User notified and cans set to empty.',
+      message: 'Cans picked up. User notified and cans marked empty.',
       returnId: parseInt(returnId),
       userId,
       userName,
