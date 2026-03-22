@@ -908,4 +908,212 @@ router.get('/nearby/:latitude/:longitude', async (req, res) => {
   }
 });
 
+
+// =====================================================
+// GET /api/distributors/:distributorId/public-profile
+// Public endpoint — USER app calls this for "Know Your Distributor"
+// Returns: name, phone, upi, schedule, ratings, reviews, stats
+// =====================================================
+router.get('/:distributorId/public-profile', async (req, res) => {
+  try {
+    const { distributorId } = req.params;
+    const distributorIdInt = parseInt(distributorId);
+    if (isNaN(distributorIdInt)) return res.status(400).json({ error: 'Invalid distributor ID' });
+
+    // Get distributor basic info + stats
+    const distResult = await pool.query(`
+      SELECT
+        d.id,
+        d.full_name,
+        d.phone,
+        d.upi_id,
+        d.is_working,
+        d.working_schedule,
+        d.created_at,
+        -- Total deliveries = all can-fill actions (orders placed to their apartments)
+        COALESCE(
+          (SELECT COUNT(*) FROM orders o
+           JOIN users u ON o.user_id = u.id
+           JOIN apartment_groups ag ON u.apartment_id = ag.id
+           WHERE ag.distributor_id = d.id AND o.status IN ('delivered','paid','completed')), 0
+        ) AS total_deliveries,
+        -- Average rating
+        COALESCE(
+          (SELECT ROUND(AVG(rating)::numeric, 1) FROM distributor_ratings WHERE distributor_id = d.id), 0
+        ) AS avg_rating,
+        -- Total rating count
+        COALESCE(
+          (SELECT COUNT(*) FROM distributor_ratings WHERE distributor_id = d.id), 0
+        ) AS rating_count
+      FROM distributors d
+      WHERE d.id = $1
+    `, [distributorIdInt]);
+
+    if (distResult.rows.length === 0)
+      return res.status(404).json({ error: 'Distributor not found' });
+
+    const d = distResult.rows[0];
+
+    // Get reviews (most recent 20, only show name + comment + rating + date)
+    const reviewsResult = await pool.query(`
+      SELECT
+        dr.id,
+        dr.rating,
+        dr.comment,
+        dr.created_at,
+        u.full_name AS reviewer_name
+      FROM distributor_ratings dr
+      JOIN users u ON dr.user_id = u.id
+      WHERE dr.distributor_id = $1
+      ORDER BY dr.created_at DESC
+      LIMIT 20
+    `, [distributorIdInt]);
+
+    res.json({
+      success: true,
+      distributor: {
+        id: d.id,
+        fullName: d.full_name,
+        phone: d.phone,
+        upiId: d.upi_id,
+        isWorking: d.is_working,
+        workingSchedule: d.working_schedule || {},
+        joinedAt: d.created_at,
+        totalDeliveries: parseInt(d.total_deliveries),
+        avgRating: parseFloat(d.avg_rating) || 0,
+        ratingCount: parseInt(d.rating_count),
+        reviews: reviewsResult.rows.map(r => ({
+          id: r.id,
+          rating: r.rating,
+          comment: r.comment,
+          reviewerName: r.reviewer_name,
+          createdAt: r.created_at
+        }))
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Public profile error:', error);
+    res.status(500).json({ error: 'Failed to get distributor profile' });
+  }
+});
+
+// =====================================================
+// POST /api/distributors/:distributorId/rate
+// USER submits or updates their rating + comment
+// =====================================================
+router.post('/:distributorId/rate', async (req, res) => {
+  // Validate user token
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Access token required' });
+
+  const jwt = require('jsonwebtoken');
+  let decoded;
+  try {
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (e) {
+    return res.status(403).json({ error: 'Invalid or expired token' });
+  }
+
+  const userId = decoded.userId;
+  if (!userId) return res.status(403).json({ error: 'User token required' });
+
+  try {
+    const { distributorId } = req.params;
+    const distributorIdInt = parseInt(distributorId);
+    if (isNaN(distributorIdInt)) return res.status(400).json({ error: 'Invalid distributor ID' });
+
+    const { rating, comment } = req.body;
+
+    if (!rating || rating < 1 || rating > 5)
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+
+    // Verify user belongs to this distributor's apartment
+    const memberCheck = await pool.query(`
+      SELECT u.id FROM users u
+      JOIN apartment_groups ag ON u.apartment_id = ag.id
+      WHERE u.id = $1 AND ag.distributor_id = $2
+    `, [userId, distributorIdInt]);
+
+    if (memberCheck.rows.length === 0)
+      return res.status(403).json({ error: 'You can only rate your own distributor' });
+
+    // Upsert: one rating per user per distributor
+    const result = await pool.query(`
+      INSERT INTO distributor_ratings (distributor_id, user_id, rating, comment, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT (distributor_id, user_id)
+      DO UPDATE SET
+        rating     = EXCLUDED.rating,
+        comment    = EXCLUDED.comment,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING *
+    `, [distributorIdInt, userId, Math.round(rating), comment ? comment.trim() : null]);
+
+    // Return updated average
+    const avgResult = await pool.query(`
+      SELECT ROUND(AVG(rating)::numeric, 1) as avg_rating, COUNT(*) as count
+      FROM distributor_ratings WHERE distributor_id = $1
+    `, [distributorIdInt]);
+
+    console.log(`✅ Rating saved: user ${userId} rated distributor ${distributorIdInt} → ${rating}/5`);
+
+    res.status(201).json({
+      message: 'Rating submitted successfully',
+      rating: result.rows[0],
+      newAverage: parseFloat(avgResult.rows[0].avg_rating) || 0,
+      totalRatings: parseInt(avgResult.rows[0].count)
+    });
+
+  } catch (error) {
+    console.error('❌ Rate distributor error:', error);
+    res.status(500).json({ error: 'Failed to submit rating' });
+  }
+});
+
+// =====================================================
+// GET /api/distributors/:distributorId/my-rating
+// USER gets their own existing rating for this distributor
+// =====================================================
+router.get('/:distributorId/my-rating', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Access token required' });
+
+  const jwt = require('jsonwebtoken');
+  let decoded;
+  try {
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (e) {
+    return res.status(403).json({ error: 'Invalid or expired token' });
+  }
+
+  const userId = decoded.userId;
+  if (!userId) return res.status(403).json({ error: 'User token required' });
+
+  try {
+    const { distributorId } = req.params;
+    const result = await pool.query(`
+      SELECT rating, comment, updated_at
+      FROM distributor_ratings
+      WHERE distributor_id = $1 AND user_id = $2
+    `, [parseInt(distributorId), userId]);
+
+    if (result.rows.length === 0)
+      return res.json({ hasRated: false });
+
+    res.json({
+      hasRated: true,
+      rating: result.rows[0].rating,
+      comment: result.rows[0].comment,
+      updatedAt: result.rows[0].updated_at
+    });
+
+  } catch (error) {
+    console.error('❌ Get my rating error:', error);
+    res.status(500).json({ error: 'Failed to get rating' });
+  }
+});
+
 module.exports = router;
