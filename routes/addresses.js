@@ -1,11 +1,24 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
+const jwt = require('jsonwebtoken');
+
+// ✅ Authentication middleware
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Access token required' });
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+    req.user = user;
+    next();
+  });
+}
 
 // Create new address
-router.post('/', async (req, res) => {
+router.post('/', authenticateToken, async (req, res) => {
   try {
-    const userId = req.userId;
+    const userId = req.user.userId;
     const { address_line, latitude, longitude } = req.body;
 
     const result = await pool.query(
@@ -24,9 +37,9 @@ router.post('/', async (req, res) => {
 });
 
 // Get all addresses
-router.get('/', async (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   try {
-    const userId = req.userId;
+    const userId = req.user.userId;
 
     const result = await pool.query(
       'SELECT * FROM addresses WHERE user_id = $1 ORDER BY created_at DESC',
@@ -41,9 +54,9 @@ router.get('/', async (req, res) => {
 });
 
 // Get specific address
-router.get('/:id', async (req, res) => {
+router.get('/:id', authenticateToken, async (req, res) => {
   try {
-    const userId = req.userId;
+    const userId = req.user.userId;
     const addressId = req.params.id;
 
     const result = await pool.query(
@@ -63,9 +76,9 @@ router.get('/:id', async (req, res) => {
 });
 
 // Update address
-router.put('/:id', async (req, res) => {
+router.put('/:id', authenticateToken, async (req, res) => {
   try {
-    const userId = req.userId;
+    const userId = req.user.userId;
     const addressId = req.params.id;
     const { address_line, latitude, longitude } = req.body;
 
@@ -89,9 +102,9 @@ router.put('/:id', async (req, res) => {
 });
 
 // Delete address
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authenticateToken, async (req, res) => {
   try {
-    const userId = req.userId;
+    const userId = req.user.userId;
     const addressId = req.params.id;
 
     const result = await pool.query(

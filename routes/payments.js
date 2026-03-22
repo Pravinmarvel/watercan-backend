@@ -91,7 +91,6 @@ router.post('/', authenticateToken, async (req, res) => {
 
       if (userResult.rows.length > 0 && userResult.rows[0].fcm_token) {
         const fcmToken = userResult.rows[0].fcm_token;
-        const userName = userResult.rows[0].full_name || 'User';
 
         // Send notification via Firebase
         const message = {
@@ -231,43 +230,48 @@ router.get('/distributor/payments', async (req, res) => {
 
       const distributorId = distributor.distributorId;
 
-      // Get all apartments for this distributor
-      const apartmentsResult = await pool.query(
-        'SELECT id FROM apartment_groups WHERE distributor_id = $1',
-        [distributorId]
-      );
+      try {
+        // Get all apartments for this distributor
+        const apartmentsResult = await pool.query(
+          'SELECT id FROM apartment_groups WHERE distributor_id = $1',
+          [distributorId]
+        );
 
-      const apartmentIds = apartmentsResult.rows.map(row => row.id);
+        const apartmentIds = apartmentsResult.rows.map(row => row.id);
 
-      if (apartmentIds.length === 0) {
-        return res.json({ payments: [], count: 0 });
+        if (apartmentIds.length === 0) {
+          return res.json({ payments: [], count: 0 });
+        }
+
+        // Get all payments from users in these apartments
+        const query = `
+          SELECT 
+            p.*,
+            o.quantity,
+            o.total_amount,
+            o.user_id,
+            u.full_name as user_name,
+            u.phone as user_phone,
+            ag.name as apartment_name
+          FROM payments p
+          JOIN orders o ON p.order_id = o.id
+          JOIN users u ON o.user_id = u.id
+          JOIN apartment_groups ag ON u.apartment_id = ag.id
+          WHERE u.apartment_id = ANY($1)
+          ORDER BY p.paid_at DESC
+          LIMIT 100
+        `;
+
+        const result = await pool.query(query, [apartmentIds]);
+
+        res.json({
+          payments: result.rows,
+          count: result.rows.length
+        });
+      } catch (queryError) {
+        console.error('❌ Get distributor payments query error:', queryError);
+        res.status(500).json({ error: 'Failed to get payments' });
       }
-
-      // Get all payments from users in these apartments
-      const query = `
-        SELECT 
-          p.*,
-          o.quantity,
-          o.total_amount,
-          o.user_id,
-          u.full_name as user_name,
-          u.phone as user_phone,
-          ag.name as apartment_name
-        FROM payments p
-        JOIN orders o ON p.order_id = o.id
-        JOIN users u ON o.user_id = u.id
-        JOIN apartment_groups ag ON u.apartment_id = ag.id
-        WHERE u.apartment_id = ANY($1)
-        ORDER BY p.paid_at DESC
-        LIMIT 100
-      `;
-
-      const result = await pool.query(query, [apartmentIds]);
-
-      res.json({
-        payments: result.rows,
-        count: result.rows.length
-      });
     });
 
   } catch (error) {

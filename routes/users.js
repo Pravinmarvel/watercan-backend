@@ -4,6 +4,33 @@ const { pool } = require('../db');
 const jwt = require('jsonwebtoken');
 const admin = require('firebase-admin');
 
+// ✅ Simple in-memory rate limiter for OTP endpoints
+// Prevents brute-force and SMS spam
+const otpRateLimitStore = new Map();
+function otpRateLimit(req, res, next) {
+  const phone = req.body?.phone || req.ip;
+  const now = Date.now();
+  const windowMs = 60 * 1000; // 1 minute window
+  const maxRequests = 3;       // max 3 OTP requests per minute
+  
+  const record = otpRateLimitStore.get(phone) || { count: 0, resetAt: now + windowMs };
+  
+  if (now > record.resetAt) {
+    record.count = 0;
+    record.resetAt = now + windowMs;
+  }
+  
+  record.count++;
+  otpRateLimitStore.set(phone, record);
+  
+  if (record.count > maxRequests) {
+    return res.status(429).json({ 
+      error: 'Too many OTP requests. Please wait a minute before trying again.' 
+    });
+  }
+  next();
+}
+
 // In-memory OTP storage (10-minute expiry)
 const otpStore = new Map();
 
@@ -164,7 +191,7 @@ router.post('/complete-google-registration', async (req, res) => {
 // =====================================================
 
 // POST /api/users/send-otp
-router.post('/send-otp', async (req, res) => {
+router.post('/send-otp', otpRateLimit, async (req, res) => {
   try {
     const { phone } = req.body;
     
@@ -177,9 +204,12 @@ router.post('/send-otp', async (req, res) => {
 
     otpStore.set(phone, { otp, expiresAt, attempts: 0 });
     
-    console.log(`📱 OTP for ${phone}: ${otp}`);
+    // ✅ SECURITY: Log OTP only in development, NEVER send it in the response
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`📱 OTP for ${phone}: ${otp} [DEV ONLY]`);
+    }
     
-    res.json({ message: 'OTP sent successfully', otp: otp });
+    res.json({ message: 'OTP sent successfully' }); // ✅ OTP NOT returned to client
 
   } catch (error) {
     console.error('❌ Send OTP error:', error);
