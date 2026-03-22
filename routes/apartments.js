@@ -39,26 +39,30 @@ router.get('/:apartmentId/residents', async (req, res) => {
         u.phone,
         u.full_name,
         u.apartment_id,
-        a.address_line,
+        -- ✅ FIX: Subquery gets the MOST RECENT saved address only
+        -- Prevents duplicate rows when a user has multiple addresses
+        (SELECT a.address_line 
+         FROM addresses a 
+         WHERE a.user_id = u.id 
+         ORDER BY a.created_at DESC 
+         LIMIT 1) as address_line,
         cs.can_1_full,
         cs.can_2_full,
         cs.can_3_full,
         cs.updated_at as can_status_updated,
         COALESCE(cs.additional_cans, 0) as additional_cans,
         COALESCE(SUM(o.quantity), 0) as total_cans_cycle,
-        -- ✅ NEW: Count all-time subscriptions for this user (0 = never subscribed)
         (SELECT COUNT(*) FROM subscriptions s WHERE s.user_id = u.id) as total_subscriptions,
-        -- ✅ NEW: Count collected returns (> 0 means user has returned cans before)
         (SELECT COUNT(*) FROM can_returns cr WHERE cr.user_id = u.id AND cr.status = 'collected') as total_collected_returns
       FROM users u
-      LEFT JOIN addresses a ON a.user_id = u.id
+      -- ✅ REMOVED: LEFT JOIN addresses — was causing one row per address per user
       LEFT JOIN can_status cs ON cs.user_id = u.id
       LEFT JOIN orders o ON o.user_id = u.id 
         AND o.created_at >= $2 
         AND o.created_at <= $3
       WHERE u.apartment_id = $1
-      GROUP BY u.id, u.phone, u.full_name, u.apartment_id, 
-               a.address_line, cs.can_1_full, cs.can_2_full, 
+      GROUP BY u.id, u.phone, u.full_name, u.apartment_id,
+               cs.can_1_full, cs.can_2_full, 
                cs.can_3_full, cs.updated_at, cs.additional_cans
       ORDER BY u.full_name ASC
     `;
