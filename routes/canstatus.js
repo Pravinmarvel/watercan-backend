@@ -313,29 +313,31 @@ async function sendCanFilledNotification(userId, userName) {
 
     const distributorName = distributorQuery.rows[0]?.distributor_name || 'Your distributor';
     
-    // ✅ Format time nicely (3:45 PM IST format)
+    // ✅ Format time and date (IST)
     const now = new Date();
-    const options = { 
-      hour: '2-digit', 
-      minute: '2-digit',
-      hour12: true,
-      timeZone: 'Asia/Kolkata'
-    };
-    const currentTime = now.toLocaleTimeString('en-IN', options);
+    const currentTime = now.toLocaleTimeString('en-IN', {
+      hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata'
+    });
+    const currentDate = now.toLocaleDateString('en-IN', {
+      day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata'
+    });
+    const dateTimeStr = `${currentDate}, ${currentTime}`;
 
     // ✅ Send beautiful notification with Firebase Admin SDK
     await admin.messaging().send({
       token: fcmToken,
       notification: {
         title: `✨ Fresh Water Delivered!`,
-        body: `${distributorName} just filled your cans at ${currentTime}. Enjoy fresh, clean water! 💧`
+        body: `${distributorName} filled your cans on ${dateTimeStr}. Enjoy fresh, clean water! 💧`
       },
       data: {
         type: 'can_filled',
         userId: userId.toString(),
         distributorName: distributorName,
         timestamp: now.toISOString(),
-        time: currentTime
+        time: currentTime,
+        date: currentDate,
+        dateTime: dateTimeStr
       },
       android: {
         priority: 'high',
@@ -464,17 +466,18 @@ async function sendAdditionalCanFilledNotification(userId, userName, count) {
 
     const now = new Date();
     const currentTime = now.toLocaleTimeString('en-IN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-      timeZone: 'Asia/Kolkata'
+      hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata'
     });
+    const currentDate = now.toLocaleDateString('en-IN', {
+      day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata'
+    });
+    const dateTimeStr = `${currentDate}, ${currentTime}`;
 
     await admin.messaging().send({
       token: fcmToken,
       notification: {
         title: `💧 Additional Cans Delivered!`,
-        body: `${distributorName} delivered your ${count} additional can${count > 1 ? 's' : ''} at ${currentTime}. Enjoy! 🌊`
+        body: `${distributorName} delivered your ${count} additional can${count > 1 ? 's' : ''} on ${dateTimeStr}. Enjoy! 🌊`
       },
       data: {
         type: 'additional_can_filled',
@@ -482,7 +485,9 @@ async function sendAdditionalCanFilledNotification(userId, userName, count) {
         distributorName: distributorName,
         filledCount: count.toString(),
         timestamp: now.toISOString(),
-        time: currentTime
+        time: currentTime,
+        date: currentDate,
+        dateTime: dateTimeStr
       },
       android: {
         priority: 'high',
