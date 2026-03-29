@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 const jwt = require('jsonwebtoken');
-const admin = require('firebase-admin');
+const admin = require('firebase-admin'); // ✅ CORRECT IMPORT
 
 // =====================================================
 // AUTHENTICATION MIDDLEWARE
@@ -15,36 +15,35 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({ error: 'Invalid or expired token' });
+  jwt.verify(
+    token, 
+    process.env.JWT_SECRET, 
+    (err, user) => {
+      if (err) {
+        return res.status(403).json({ error: 'Invalid or expired token' });
+      }
+      req.user = user;
+      next();
     }
-    req.user = user;
-    next();
-  });
+  );
 }
 
 // =====================================================
-// CREATE PAYMENT
-// ✅ Accepts both camelCase (orderId) and snake_case (order_id)
-// ✅ Stores optional razorpay_payment_id
+// CREATE PAYMENT - ENHANCED WITH NOTIFICATION
 // =====================================================
 router.post('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
+    const { orderId, method, amount, status } = req.body;
 
-    // ✅ Accept both camelCase (from Razorpay/Flutter) and snake_case (legacy)
-    const orderId = req.body.orderId ?? req.body.order_id;
-    const { method, amount, status, razorpay_payment_id } = req.body;
-
-    // Validate required fields
+    // Validate inputs
     if (!orderId || !method || !amount) {
       return res.status(400).json({
         error: 'Order ID, payment method, and amount are required'
       });
     }
 
-    console.log(`💰 Creating payment for order ${orderId} by user ${userId} via ${method}`);
+    console.log(`💰 Creating payment for order ${orderId} by user ${userId}`);
 
     // Verify order belongs to user
     const orderCheck = await pool.query(
@@ -56,38 +55,12 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    // ✅ Check for duplicate payment (idempotent — safe to call twice)
-    if (razorpay_payment_id) {
-      const dupCheck = await pool.query(
-        'SELECT id FROM payments WHERE razorpay_payment_id = $1',
-        [razorpay_payment_id]
-      );
-      if (dupCheck.rows.length > 0) {
-        console.log(`ℹ️ Duplicate payment request for razorpay_payment_id ${razorpay_payment_id} — returning existing`);
-        const existing = await pool.query(
-          'SELECT * FROM payments WHERE razorpay_payment_id = $1',
-          [razorpay_payment_id]
-        );
-        return res.status(200).json({
-          message: 'Payment already recorded',
-          payment: {
-            id: existing.rows[0].id,
-            orderId: existing.rows[0].order_id,
-            method: existing.rows[0].method,
-            amount: existing.rows[0].amount,
-            status: existing.rows[0].status,
-            paidAt: existing.rows[0].paid_at
-          }
-        });
-      }
-    }
+    const order = orderCheck.rows[0];
 
     // Create payment record
-    // ✅ razorpay_payment_id column: add to your DB with:
-    //    ALTER TABLE payments ADD COLUMN IF NOT EXISTS razorpay_payment_id VARCHAR(100);
     const paymentQuery = `
-      INSERT INTO payments (order_id, method, amount, status, razorpay_payment_id, paid_at)
-      VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+      INSERT INTO payments (order_id, method, amount, status, paid_at)
+      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
       RETURNING *
     `;
 
@@ -95,8 +68,7 @@ router.post('/', authenticateToken, async (req, res) => {
       orderId,
       method,
       amount,
-      status || 'success',
-      razorpay_payment_id || null
+      status || 'success'
     ]);
 
     const payment = paymentResult.rows[0];
@@ -107,10 +79,11 @@ router.post('/', authenticateToken, async (req, res) => {
       ['paid', orderId]
     );
 
-    console.log(`✅ Payment created: ID ${payment.id}${razorpay_payment_id ? ` (Razorpay: ${razorpay_payment_id})` : ''}`);
+    console.log(`✅ Payment created: ID ${payment.id}`);
 
-    // ✅ Send FCM notification to user
+    // ✅ Send notification to user
     try {
+      // Get user's FCM token
       const userResult = await pool.query(
         'SELECT fcm_token, full_name FROM users WHERE id = $1',
         [userId]
@@ -119,6 +92,7 @@ router.post('/', authenticateToken, async (req, res) => {
       if (userResult.rows.length > 0 && userResult.rows[0].fcm_token) {
         const fcmToken = userResult.rows[0].fcm_token;
 
+        // Send notification via Firebase
         const message = {
           token: fcmToken,
           notification: {
@@ -143,17 +117,20 @@ router.post('/', authenticateToken, async (req, res) => {
           },
           apns: {
             payload: {
-              aps: { sound: 'default', badge: 1 }
+              aps: {
+                sound: 'default',
+                badge: 1
+              }
             }
           }
         };
 
         await admin.messaging().send(message);
-        console.log(`🔔 Payment notification sent to user ${userId}`);
+        console.log(`🔔 Payment confirmation notification sent to user ${userId}`);
       }
     } catch (notifError) {
       console.error('⚠️ Failed to send notification:', notifError.message);
-      // Non-fatal
+      // Don't fail the payment if notification fails
     }
 
     res.status(201).json({
@@ -164,7 +141,6 @@ router.post('/', authenticateToken, async (req, res) => {
         method: payment.method,
         amount: payment.amount,
         status: payment.status,
-        razorpayPaymentId: payment.razorpay_payment_id,
         paidAt: payment.paid_at
       }
     });
@@ -196,7 +172,9 @@ router.get('/order/:orderId', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'Payment not found' });
     }
 
-    res.json({ payment: result.rows[0] });
+    res.json({
+      payment: result.rows[0]
+    });
 
   } catch (error) {
     console.error('❌ Get payment error:', error);
@@ -221,7 +199,9 @@ router.get('/my-payments', authenticateToken, async (req, res) => {
 
     const result = await pool.query(query, [userId]);
 
-    res.json({ payments: result.rows });
+    res.json({
+      payments: result.rows
+    });
 
   } catch (error) {
     console.error('❌ Get payments error:', error);
@@ -230,7 +210,7 @@ router.get('/my-payments', authenticateToken, async (req, res) => {
 });
 
 // =====================================================
-// GET PAYMENTS FOR DISTRIBUTOR
+// GET PAYMENTS FOR DISTRIBUTOR (NEW)
 // =====================================================
 router.get('/distributor/payments', async (req, res) => {
   try {
@@ -241,7 +221,9 @@ router.get('/distributor/payments', async (req, res) => {
       return res.status(401).json({ error: 'Access token required' });
     }
 
-    jwt.verify(token, process.env.JWT_SECRET, async (err, distributor) => {
+    const secret = process.env.JWT_SECRET;
+
+    jwt.verify(token, secret, async (err, distributor) => {
       if (err) {
         return res.status(403).json({ error: 'Invalid or expired token' });
       }
@@ -249,6 +231,7 @@ router.get('/distributor/payments', async (req, res) => {
       const distributorId = distributor.distributorId;
 
       try {
+        // Get all apartments for this distributor
         const apartmentsResult = await pool.query(
           'SELECT id FROM apartment_groups WHERE distributor_id = $1',
           [distributorId]
@@ -260,6 +243,7 @@ router.get('/distributor/payments', async (req, res) => {
           return res.json({ payments: [], count: 0 });
         }
 
+        // Get all payments from users in these apartments
         const query = `
           SELECT 
             p.*,
@@ -280,7 +264,10 @@ router.get('/distributor/payments', async (req, res) => {
 
         const result = await pool.query(query, [apartmentIds]);
 
-        res.json({ payments: result.rows, count: result.rows.length });
+        res.json({
+          payments: result.rows,
+          count: result.rows.length
+        });
       } catch (queryError) {
         console.error('❌ Get distributor payments query error:', queryError);
         res.status(500).json({ error: 'Failed to get payments' });
