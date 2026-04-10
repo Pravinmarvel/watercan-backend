@@ -59,12 +59,14 @@ router.post('/', authenticateToken, async (req, res) => {
       });
     }
 
-    // Create the order
+    // Create the order — supports optional scheduled_for datetime
+    const scheduled_for = req.body.scheduled_for || null;
+
     const result = await pool.query(
-      `INSERT INTO orders (user_id, address_id, quantity, total_amount, status, created_at) 
-       VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP) 
+      `INSERT INTO orders (user_id, address_id, quantity, total_amount, status, scheduled_for, created_at) 
+       VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP) 
        RETURNING *`,
-      [userId, address_id, quantity, total_amount, status || 'pending']
+      [userId, address_id, quantity, total_amount, status || 'pending', scheduled_for]
     );
 
     console.log(`✅ Order created successfully: ID ${result.rows[0].id}`);
@@ -102,6 +104,58 @@ router.get('/', authenticateToken, async (req, res) => {
 
   } catch (error) {
     console.error('❌ Get orders error:', error);
+    res.status(500).json({ error: 'Failed to get orders' });
+  }
+});
+
+// GET /api/orders/user/:userId - Get paginated orders for a user
+// Used by distributor app OrderHistoryPage. Must be before /:id to avoid
+// Express matching 'user' as an order ID.
+router.get('/user/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const limit  = Math.min(parseInt(req.query.limit)  || 10, 50);
+    const offset = Math.max(parseInt(req.query.offset) || 0,  0);
+
+    // Auth: accept both user JWT and distributor JWT
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Access token required' });
+
+    let decoded;
+    try {
+      decoded = require('jsonwebtoken').verify(token, process.env.JWT_SECRET);
+    } catch (e) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+
+    // Allow: the user themselves OR a distributor
+    const isUser        = decoded.userId  && decoded.userId  === parseInt(userId);
+    const isDistributor = !!decoded.distributorId;
+
+    if (!isUser && !isDistributor) {
+      return res.status(403).json({ error: 'Not authorised to view these orders' });
+    }
+
+    console.log(`📤 Getting orders for user ${userId} (limit=${limit} offset=${offset})`);
+
+    const result = await pool.query(
+      `SELECT o.id, o.user_id, o.quantity, o.total_amount, o.status,
+              o.created_at, o.scheduled_for,
+              a.address_line, a.latitude, a.longitude
+       FROM orders o
+       LEFT JOIN addresses a ON o.address_id = a.id
+       WHERE o.user_id = $1
+       ORDER BY o.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, limit, offset]
+    );
+
+    console.log(`✅ Found ${result.rows.length} orders for user ${userId}`);
+
+    res.json({ orders: result.rows });
+  } catch (error) {
+    console.error('❌ Get user orders error:', error);
     res.status(500).json({ error: 'Failed to get orders' });
   }
 });
