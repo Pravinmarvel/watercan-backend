@@ -62,12 +62,24 @@ router.post('/', authenticateToken, async (req, res) => {
     // Create the order — supports optional scheduled_for datetime
     const scheduled_for = req.body.scheduled_for || null;
 
-    const result = await pool.query(
-      `INSERT INTO orders (user_id, address_id, quantity, total_amount, status, scheduled_for, created_at) 
-       VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP) 
-       RETURNING *`,
-      [userId, address_id, quantity, total_amount, status || 'pending', scheduled_for]
-    );
+    let result;
+    try {
+      result = await pool.query(
+        `INSERT INTO orders (user_id, address_id, quantity, total_amount, status, scheduled_for, created_at) 
+         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP) 
+         RETURNING *`,
+        [userId, address_id, quantity, total_amount, status || 'pending', scheduled_for]
+      );
+    } catch (colErr) {
+      // scheduled_for column may not exist yet — insert without it
+      console.warn('⚠️ Inserting without scheduled_for:', colErr.message);
+      result = await pool.query(
+        `INSERT INTO orders (user_id, address_id, quantity, total_amount, status, created_at) 
+         VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP) 
+         RETURNING *`,
+        [userId, address_id, quantity, total_amount, status || 'pending']
+      );
+    }
 
     console.log(`✅ Order created successfully: ID ${result.rows[0].id}`);
 
@@ -89,14 +101,28 @@ router.get('/', authenticateToken, async (req, res) => {
 
     console.log(`📤 Getting orders for user ${userId}`);
 
-    const result = await pool.query(
-      `SELECT o.*, a.address_line, a.latitude, a.longitude 
-       FROM orders o 
-       LEFT JOIN addresses a ON o.address_id = a.id 
-       WHERE o.user_id = $1 
-       ORDER BY o.created_at DESC`,
-      [userId]
-    );
+    let result;
+    try {
+      result = await pool.query(
+        `SELECT o.*, a.address_line, a.latitude, a.longitude 
+         FROM orders o 
+         LEFT JOIN addresses a ON o.address_id = a.id 
+         WHERE o.user_id = $1 
+         ORDER BY o.created_at DESC`,
+        [userId]
+      );
+    } catch (e) {
+      result = await pool.query(
+        `SELECT o.id, o.user_id, o.address_id, o.quantity, o.total_amount,
+                o.status, o.created_at,
+                a.address_line, a.latitude, a.longitude
+         FROM orders o 
+         LEFT JOIN addresses a ON o.address_id = a.id 
+         WHERE o.user_id = $1 
+         ORDER BY o.created_at DESC`,
+        [userId]
+      );
+    }
 
     console.log(`✅ Found ${result.rows.length} orders`);
 
@@ -139,17 +165,35 @@ router.get('/user/:userId', async (req, res) => {
 
     console.log(`📤 Getting orders for user ${userId} (limit=${limit} offset=${offset})`);
 
-    const result = await pool.query(
-      `SELECT o.id, o.user_id, o.quantity, o.total_amount, o.status,
-              o.created_at, o.scheduled_for,
-              a.address_line, a.latitude, a.longitude
-       FROM orders o
-       LEFT JOIN addresses a ON o.address_id = a.id
-       WHERE o.user_id = $1
-       ORDER BY o.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [userId, limit, offset]
-    );
+    // Try with scheduled_for first; fall back gracefully if column doesn't exist yet
+    let result;
+    try {
+      result = await pool.query(
+        `SELECT o.id, o.user_id, o.quantity, o.total_amount, o.status,
+                o.created_at, o.scheduled_for,
+                a.address_line, a.latitude, a.longitude
+         FROM orders o
+         LEFT JOIN addresses a ON o.address_id = a.id
+         WHERE o.user_id = $1
+         ORDER BY o.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
+      );
+    } catch (colErr) {
+      // scheduled_for column may not exist yet — retry without it
+      console.warn('⚠️ Retrying without scheduled_for:', colErr.message);
+      result = await pool.query(
+        `SELECT o.id, o.user_id, o.quantity, o.total_amount, o.status,
+                o.created_at, NULL as scheduled_for,
+                a.address_line, a.latitude, a.longitude
+         FROM orders o
+         LEFT JOIN addresses a ON o.address_id = a.id
+         WHERE o.user_id = $1
+         ORDER BY o.created_at DESC
+         LIMIT $2 OFFSET $3`,
+        [userId, limit, offset]
+      );
+    }
 
     console.log(`✅ Found ${result.rows.length} orders for user ${userId}`);
 

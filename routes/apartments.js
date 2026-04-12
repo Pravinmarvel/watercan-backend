@@ -46,6 +46,16 @@ router.get('/:apartmentId/residents', async (req, res) => {
          WHERE a.user_id = u.id 
          ORDER BY a.created_at DESC 
          LIMIT 1) as address_line,
+        (SELECT a.latitude
+         FROM addresses a
+         WHERE a.user_id = u.id
+         ORDER BY a.created_at DESC
+         LIMIT 1) as user_latitude,
+        (SELECT a.longitude
+         FROM addresses a
+         WHERE a.user_id = u.id
+         ORDER BY a.created_at DESC
+         LIMIT 1) as user_longitude,
         cs.can_1_full,
         cs.can_2_full,
         cs.can_3_full,
@@ -53,7 +63,8 @@ router.get('/:apartmentId/residents', async (req, res) => {
         COALESCE(cs.additional_cans, 0) as additional_cans,
         COALESCE(SUM(o.quantity), 0) as total_cans_cycle,
         (SELECT COUNT(*) FROM subscriptions s WHERE s.user_id = u.id) as total_subscriptions,
-        (SELECT COUNT(*) FROM can_returns cr WHERE cr.user_id = u.id AND cr.status = 'collected') as total_collected_returns
+        (SELECT COUNT(*) FROM can_returns cr WHERE cr.user_id = u.id AND cr.status = 'collected') as total_collected_returns,
+        (SELECT COUNT(*) FROM orders o2 WHERE o2.user_id = u.id AND o2.status = 'scheduled') as scheduled_orders_count
       FROM users u
       -- ✅ REMOVED: LEFT JOIN addresses — was causing one row per address per user
       LEFT JOIN can_status cs ON cs.user_id = u.id
@@ -89,6 +100,8 @@ router.get('/:apartmentId/residents', async (req, res) => {
         phone: row.phone,
         fullName: row.full_name,
         address: row.address_line,
+        latitude: row.user_latitude  ? parseFloat(row.user_latitude)  : null,
+        longitude: row.user_longitude ? parseFloat(row.user_longitude) : null,
         canStatus: {
           can1Full: row.can_1_full,
           can2Full: row.can_2_full,
@@ -102,6 +115,7 @@ router.get('/:apartmentId/residents', async (req, res) => {
         // 'new'     = never subscribed at all
         // 'renewed' = has returned cans before (returned + buying again)
         // null      = normal active subscriber
+        scheduledOrders: parseInt(row.scheduled_orders_count) || 0,
         customerStatus: parseInt(row.total_subscriptions) === 0
           ? 'new'
           : parseInt(row.total_collected_returns) > 0
