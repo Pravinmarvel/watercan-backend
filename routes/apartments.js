@@ -71,6 +71,7 @@ router.get('/:apartmentId/residents', async (req, res) => {
       LEFT JOIN orders o ON o.user_id = u.id 
         AND o.created_at >= $2 
         AND o.created_at <= $3
+        AND o.status != 'scheduled'
       WHERE u.apartment_id = $1
       GROUP BY u.id, u.phone, u.full_name, u.apartment_id,
                cs.can_1_full, cs.can_2_full, 
@@ -111,6 +112,8 @@ router.get('/:apartmentId/residents', async (req, res) => {
         // ✅ additional_cans: live count from can_status (resets to 0 when distributor fills)
         additionalCans: parseInt(row.additional_cans) || 0,
         totalCansThisCycle: parseInt(row.total_cans_cycle),
+        // subscriptionCans = cycle total minus additional cans (min 0)
+        subscriptionCans: Math.max(0, parseInt(row.total_cans_cycle) - (parseInt(row.additional_cans) || 0)),
         // ✅ NEW: for New/Renewed badge in distributor app
         // 'new'     = never subscribed at all
         // 'renewed' = has returned cans before (returned + buying again)
