@@ -64,14 +64,17 @@ router.get('/:apartmentId/residents', async (req, res) => {
         COALESCE(SUM(o.quantity), 0) as total_cans_cycle,
         (SELECT COUNT(*) FROM subscriptions s WHERE s.user_id = u.id) as total_subscriptions,
         (SELECT COUNT(*) FROM can_returns cr WHERE cr.user_id = u.id AND cr.status = 'collected') as total_collected_returns,
-        (SELECT COUNT(*) FROM orders o2 WHERE o2.user_id = u.id AND o2.status = 'scheduled') as scheduled_orders_count
+        (SELECT COUNT(*) FROM orders o2 WHERE o2.user_id = u.id AND o2.status = 'scheduled' AND (o2.scheduled_for IS NULL OR o2.scheduled_for >= NOW())) as scheduled_orders_count,
+        (SELECT json_agg(json_build_object('id', o3.id, 'quantity', o3.quantity, 'scheduled_for', o3.scheduled_for, 'created_at', o3.created_at) ORDER BY o3.scheduled_for ASC NULLS LAST)
+         FROM orders o3 
+         WHERE o3.user_id = u.id AND o3.status = 'scheduled' AND (o3.scheduled_for IS NULL OR o3.scheduled_for >= NOW())
+        ) as scheduled_order_list
       FROM users u
       -- ✅ REMOVED: LEFT JOIN addresses — was causing one row per address per user
       LEFT JOIN can_status cs ON cs.user_id = u.id
       LEFT JOIN orders o ON o.user_id = u.id 
         AND o.created_at >= $2 
         AND o.created_at <= $3
-        AND o.status != 'scheduled'
       WHERE u.apartment_id = $1
       GROUP BY u.id, u.phone, u.full_name, u.apartment_id,
                cs.can_1_full, cs.can_2_full, 
@@ -112,13 +115,12 @@ router.get('/:apartmentId/residents', async (req, res) => {
         // ✅ additional_cans: live count from can_status (resets to 0 when distributor fills)
         additionalCans: parseInt(row.additional_cans) || 0,
         totalCansThisCycle: parseInt(row.total_cans_cycle),
-        // subscriptionCans = cycle total minus additional cans (min 0)
-        subscriptionCans: Math.max(0, parseInt(row.total_cans_cycle) - (parseInt(row.additional_cans) || 0)),
         // ✅ NEW: for New/Renewed badge in distributor app
         // 'new'     = never subscribed at all
         // 'renewed' = has returned cans before (returned + buying again)
         // null      = normal active subscriber
         scheduledOrders: parseInt(row.scheduled_orders_count) || 0,
+        scheduledOrderList: row.scheduled_order_list || [],
         customerStatus: parseInt(row.total_subscriptions) === 0
           ? 'new'
           : parseInt(row.total_collected_returns) > 0
