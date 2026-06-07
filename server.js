@@ -35,7 +35,7 @@ app.use(cors({
   credentials: true,
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
 // ✅ Request logging middleware
 app.use((req, res, next) => {
@@ -139,7 +139,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'production'}`);
   console.log('🔐 Security: ✅ Enabled');
   console.log('🔔 Firebase: ✅');
-  console.log('📋 Routes: 11 mounted');
+  console.log('📋 Routes: 8 mounted');
   console.log('🔄 JWT: Auto-refresh enabled');
   console.log('======================================================================');
 });

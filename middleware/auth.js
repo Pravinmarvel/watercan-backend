@@ -1,3 +1,14 @@
+// =====================================================
+// auth.js — OPTIONAL shared JWT helpers/middleware.
+// NOTE: The route files currently define their own inline authenticateToken,
+//       so this module is not wired into server.js by default. It is kept
+//       here as a single source of truth you can switch to.
+//
+// Token shapes used across the app:
+//   • USER token        → { userId, ... }
+//   • DISTRIBUTOR token  → { distributorId, ... }
+// The verify helpers below read the correct id field for each.
+// =====================================================
 const jwt = require('jsonwebtoken');
 const { pool } = require('../db');
 
@@ -103,11 +114,14 @@ async function verifyDistributorToken(req, res, next) {
 
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
-      
+
+      // Distributor tokens carry distributorId (fall back to userId for legacy)
+      const distId = decoded.distributorId || decoded.userId;
+
       // Check if distributor exists
       const result = await pool.query(
         'SELECT id, email, full_name, phone, apartment_id FROM distributors WHERE id = $1',
-        [decoded.userId]
+        [distId]
       );
 
       if (result.rows.length === 0) {
@@ -118,7 +132,8 @@ async function verifyDistributorToken(req, res, next) {
       }
 
       req.distributor = {
-        id: decoded.userId,
+        id: distId,
+        distributorId: distId,
         ...result.rows[0]
       };
 
@@ -169,12 +184,13 @@ async function verifyAnyToken(req, res, next) {
 
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
-      
-      if (decoded.userType === 'distributor') {
-        // Check distributor
+
+      if (decoded.distributorId || decoded.userType === 'distributor') {
+        // Distributor
+        const distId = decoded.distributorId || decoded.userId;
         const result = await pool.query(
           'SELECT id, email, full_name, phone, apartment_id FROM distributors WHERE id = $1',
-          [decoded.userId]
+          [distId]
         );
 
         if (result.rows.length === 0) {
@@ -185,7 +201,8 @@ async function verifyAnyToken(req, res, next) {
         }
 
         req.distributor = {
-          id: decoded.userId,
+          id: distId,
+          distributorId: distId,
           ...result.rows[0]
         };
         req.userType = 'distributor';

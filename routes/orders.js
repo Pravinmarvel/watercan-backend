@@ -250,12 +250,17 @@ router.put('/:id', authenticateToken, async (req, res) => {
       });
     }
 
+    // ✅ COALESCE keeps the existing value when a field is not supplied,
+    //    so a partial update (e.g. only status) no longer nulls the others.
     const result = await pool.query(
       `UPDATE orders 
-       SET address_id = $1, quantity = $2, total_amount = $3, status = $4 
+       SET address_id   = COALESCE($1, address_id),
+           quantity     = COALESCE($2, quantity),
+           total_amount = COALESCE($3, total_amount),
+           status       = COALESCE($4, status)
        WHERE id = $5 AND user_id = $6 
        RETURNING *`,
-      [address_id, quantity, total_amount, status, orderId, userId]
+      [address_id ?? null, quantity ?? null, total_amount ?? null, status ?? null, orderId, userId]
     );
 
     if (result.rows.length === 0) {
@@ -288,8 +293,8 @@ router.patch('/:id/status', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Status is required' });
     }
 
-    // Validate status values
-    const validStatuses = ['pending', 'confirmed', 'delivered', 'cancelled', 'completed'];
+    // Validate status values — includes every status the apps actually use
+    const validStatuses = ['pending', 'scheduled', 'payment_pending', 'paid', 'confirmed', 'delivered', 'cancelled', 'completed'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ 
         error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` 

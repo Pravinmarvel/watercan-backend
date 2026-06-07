@@ -64,10 +64,10 @@ router.get('/:apartmentId/residents', async (req, res) => {
         COALESCE(SUM(o.quantity), 0) as total_cans_cycle,
         (SELECT COUNT(*) FROM subscriptions s WHERE s.user_id = u.id) as total_subscriptions,
         (SELECT COUNT(*) FROM can_returns cr WHERE cr.user_id = u.id AND cr.status = 'collected') as total_collected_returns,
-        (SELECT COUNT(*) FROM orders o2 WHERE o2.user_id = u.id AND o2.status = 'scheduled' AND (o2.scheduled_for IS NULL OR o2.scheduled_for >= NOW())) as scheduled_orders_count,
-        (SELECT json_agg(json_build_object('id', o3.id, 'quantity', o3.quantity, 'scheduled_for', o3.scheduled_for, 'created_at', o3.created_at) ORDER BY o3.scheduled_for ASC NULLS LAST)
+        (SELECT COUNT(*) FROM orders o2 WHERE o2.user_id = u.id AND o2.status = 'scheduled' AND o2.scheduled_for IS NOT NULL AND o2.scheduled_for >= NOW()) as scheduled_orders_count,
+        (SELECT json_agg(json_build_object('id', o3.id, 'quantity', o3.quantity, 'scheduled_for', o3.scheduled_for, 'created_at', o3.created_at) ORDER BY o3.scheduled_for ASC)
          FROM orders o3 
-         WHERE o3.user_id = u.id AND o3.status = 'scheduled' AND (o3.scheduled_for IS NULL OR o3.scheduled_for >= NOW())
+         WHERE o3.user_id = u.id AND o3.status = 'scheduled' AND o3.scheduled_for IS NOT NULL AND o3.scheduled_for >= NOW()
         ) as scheduled_order_list
       FROM users u
       -- ✅ REMOVED: LEFT JOIN addresses — was causing one row per address per user
@@ -75,6 +75,9 @@ router.get('/:apartmentId/residents', async (req, res) => {
       LEFT JOIN orders o ON o.user_id = u.id 
         AND o.created_at >= $2 
         AND o.created_at <= $3
+        -- ✅ Exclude scheduled (future, not-yet-delivered) orders so the
+        --    cycle total matches the user app (which also skips scheduled).
+        AND (o.status IS NULL OR o.status <> 'scheduled')
       WHERE u.apartment_id = $1
       GROUP BY u.id, u.phone, u.full_name, u.apartment_id,
                cs.can_1_full, cs.can_2_full, 

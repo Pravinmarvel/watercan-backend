@@ -482,18 +482,20 @@ router.post('/confirm-payment', authenticateToken, async (req, res) => {
     if (!orderResult.rows.length) return res.status(404).json({ error: 'No pending order found for this user' });
     const orderId = orderResult.rows[0].id;
 
-    // Upsert payment record — mark as confirmed
-    await pool.query(
-      `INSERT INTO payments (order_id, method, amount, status, paid_at)
-       VALUES ($1, 'confirmed_by_distributor', $2, 'success', CURRENT_TIMESTAMP)
-       ON CONFLICT DO NOTHING`,
-      [orderId, amount]
-    );
-    // Also update any existing pending_confirmation payment to success
-    await pool.query(
-      "UPDATE payments SET status = 'success' WHERE order_id = $1 AND status = 'pending_confirmation'",
+    // ✅ Confirm the payment without creating duplicate rows.
+    //    First try to flip an existing pending_confirmation payment to success;
+    //    only insert a fresh success row if the user had none on this order.
+    const upd = await pool.query(
+      "UPDATE payments SET status = 'success', paid_at = CURRENT_TIMESTAMP WHERE order_id = $1 AND status = 'pending_confirmation' RETURNING id",
       [orderId]
     );
+    if (upd.rows.length === 0) {
+      await pool.query(
+        `INSERT INTO payments (order_id, method, amount, status, paid_at)
+         VALUES ($1, 'confirmed_by_distributor', $2, 'success', CURRENT_TIMESTAMP)`,
+        [orderId, amount]
+      );
+    }
     // Mark order as paid
     await pool.query("UPDATE orders SET status = 'paid' WHERE id = $1", [orderId]);
 
