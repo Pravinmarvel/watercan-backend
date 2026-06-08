@@ -97,31 +97,75 @@ router.get('/:apartmentId/residents', async (req, res) => {
     result.rows.forEach(row => {
       console.log(`   User ${row.id}: ${row.total_cans_cycle} cans`);
     });
-    
-    res.json({
-      success: true,
-      cycleStart: cycleStart.toISOString(),
-      cycleEnd: cycleEnd.toISOString(),
-      residents: result.rows.map(row => ({
+
+    // ✅ Get this apartment's distributor location (to compute proximity).
+    let distLat = null, distLng = null;
+    try {
+      const dloc = await pool.query(
+        `SELECT d.current_latitude, d.current_longitude
+         FROM apartment_groups ag
+         JOIN distributors d ON d.id = ag.distributor_id
+         WHERE ag.id = $1`,
+        [apartmentId]
+      );
+      if (dloc.rows.length > 0) {
+        distLat = dloc.rows[0].current_latitude != null ? parseFloat(dloc.rows[0].current_latitude) : null;
+        distLng = dloc.rows[0].current_longitude != null ? parseFloat(dloc.rows[0].current_longitude) : null;
+      }
+    } catch (e) {
+      console.warn('⚠️ Could not load distributor location:', e.message);
+    }
+
+    // ✅ Active Cash-on-Delivery users (table may not exist yet → empty set).
+    let codUserIds = new Set();
+    try {
+      const codRes = await pool.query(
+        `SELECT DISTINCT user_id FROM cod_flags
+         WHERE cycle_end IS NULL OR cycle_end >= NOW()`
+      );
+      codUserIds = new Set(codRes.rows.map(r => r.user_id));
+    } catch (e) {
+      // cod_flags not created yet — no COD users. Safe to ignore.
+    }
+
+    // Haversine distance in metres.
+    const distanceMeters = (lat1, lng1, lat2, lng2) => {
+      const toRad = (d) => d * Math.PI / 180;
+      const R = 6371000;
+      const dLat = toRad(lat2 - lat1);
+      const dLng = toRad(lng2 - lng1);
+      const a = Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    };
+
+    const residents = result.rows.map(row => {
+      const uLat = row.user_latitude  != null ? parseFloat(row.user_latitude)  : null;
+      const uLng = row.user_longitude != null ? parseFloat(row.user_longitude) : null;
+      let distance = null;
+      if (distLat != null && distLng != null && uLat != null && uLng != null) {
+        distance = Math.round(distanceMeters(distLat, distLng, uLat, uLng));
+      }
+      return {
         id: row.id,
         phone: row.phone,
         fullName: row.full_name,
         address: row.address_line,
-        latitude: row.user_latitude  ? parseFloat(row.user_latitude)  : null,
-        longitude: row.user_longitude ? parseFloat(row.user_longitude) : null,
+        latitude: uLat,
+        longitude: uLng,
+        // ✅ Distance (metres) from the distributor's last known location,
+        //    or null if either side has no coordinates / no live location.
+        distance: distance,
+        // ✅ COD flag for this cycle.
+        cod: codUserIds.has(row.id),
         canStatus: {
           can1Full: row.can_1_full,
           can2Full: row.can_2_full,
           can3Full: row.can_3_full,
           updatedAt: row.can_status_updated
         },
-        // ✅ additional_cans: live count from can_status (resets to 0 when distributor fills)
         additionalCans: parseInt(row.additional_cans) || 0,
         totalCansThisCycle: parseInt(row.total_cans_cycle),
-        // ✅ NEW: for New/Renewed badge in distributor app
-        // 'new'     = never subscribed at all
-        // 'renewed' = has returned cans before (returned + buying again)
-        // null      = normal active subscriber
         scheduledOrders: parseInt(row.scheduled_orders_count) || 0,
         scheduledOrderList: row.scheduled_order_list || [],
         customerStatus: parseInt(row.total_subscriptions) === 0
@@ -129,7 +173,24 @@ router.get('/:apartmentId/residents', async (req, res) => {
           : parseInt(row.total_collected_returns) > 0
             ? 'renewed'
             : null
-      }))
+      };
+    });
+
+    // ✅ Sort nearest-first when distances are known; residents without a
+    //    distance go to the end. (The app also sorts, but sorting here keeps
+    //    every client consistent.)
+    residents.sort((a, b) => {
+      if (a.distance == null && b.distance == null) return 0;
+      if (a.distance == null) return 1;
+      if (b.distance == null) return -1;
+      return a.distance - b.distance;
+    });
+
+    res.json({
+      success: true,
+      cycleStart: cycleStart.toISOString(),
+      cycleEnd: cycleEnd.toISOString(),
+      residents: residents
     });
     
   } catch (error) {

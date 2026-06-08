@@ -419,6 +419,29 @@ router.put('/fill/:userId', authenticateToken, async (req, res) => {
 
     console.log(`✅ Distributor ${distributorId} filled cans for user ${userId}`);
 
+    // ✅ NEW: Remove the EARLIEST pending scheduled order for this user.
+    // Each fill clears one scheduled delivery, earliest first. So if a user
+    // has two scheduled cans, the one with the earliest scheduled_for is
+    // removed on this fill, and the later one remains for the next fill.
+    try {
+      const sched = await pool.query(
+        `SELECT id FROM orders
+         WHERE user_id = $1 AND status = 'scheduled' AND scheduled_for IS NOT NULL
+         ORDER BY scheduled_for ASC
+         LIMIT 1`,
+        [userId]
+      );
+      if (sched.rows.length > 0) {
+        await pool.query(
+          `UPDATE orders SET status = 'delivered' WHERE id = $1`,
+          [sched.rows[0].id]
+        );
+        console.log(`✅ Cleared earliest scheduled order ${sched.rows[0].id} for user ${userId}`);
+      }
+    } catch (schedErr) {
+      console.warn('⚠️ Could not clear scheduled order:', schedErr.message);
+    }
+
     const wasFilled = can_1_full === true || can_2_full === true || can_3_full === true;
     if (wasFilled) {
       const userName = userCheck.rows[0].full_name;
