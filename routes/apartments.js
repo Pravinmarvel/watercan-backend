@@ -61,7 +61,31 @@ router.get('/:apartmentId/residents', async (req, res) => {
         cs.can_3_full,
         cs.updated_at as can_status_updated,
         COALESCE(cs.additional_cans, 0) as additional_cans,
-        COALESCE(SUM(o.quantity), 0) as total_cans_cycle,
+        -- ✅ FIXED cycle can count. The old version did COALESCE(SUM(o.quantity),0)
+        -- over a LEFT JOIN orders, which summed EVERY order row in the cycle:
+        --   • duplicate daily order rows (created before the user app started
+        --     updating one order per day in place), and
+        --   • the cycle-total "payment" order created at checkout.
+        -- That double/triple-counted the cycle (e.g. ₹1240 instead of ₹400).
+        -- This counts the SAME way the user app does: one figure per calendar
+        -- day (the latest/biggest order for that day), summed across the cycle,
+        -- and ignores any order that already has a payment attached (the
+        -- checkout summary order).
+        COALESCE((
+          SELECT SUM(per_day.daily_qty)
+          FROM (
+            SELECT MAX(od.quantity) AS daily_qty
+            FROM orders od
+            WHERE od.user_id = u.id
+              AND od.created_at >= $2
+              AND od.created_at <= $3
+              AND (od.status IS NULL OR od.status <> 'scheduled')
+              AND NOT EXISTS (
+                SELECT 1 FROM payments p WHERE p.order_id = od.id
+              )
+            GROUP BY (od.created_at AT TIME ZONE 'UTC')::date
+          ) per_day
+        ), 0) as total_cans_cycle,
         (SELECT COUNT(*) FROM subscriptions s WHERE s.user_id = u.id) as total_subscriptions,
         (SELECT COUNT(*) FROM can_returns cr WHERE cr.user_id = u.id AND cr.status = 'collected') as total_collected_returns,
         (SELECT COUNT(*) FROM orders o2 WHERE o2.user_id = u.id AND o2.status = 'scheduled' AND o2.scheduled_for IS NOT NULL AND o2.scheduled_for >= NOW()) as scheduled_orders_count,
@@ -71,17 +95,11 @@ router.get('/:apartmentId/residents', async (req, res) => {
         ) as scheduled_order_list
       FROM users u
       -- ✅ REMOVED: LEFT JOIN addresses — was causing one row per address per user
+      -- ✅ REMOVED: LEFT JOIN orders — cycle cans now come from the per-day
+      --    dedup subquery above, so we no longer aggregate here (and no longer
+      --    need a GROUP BY). This is what eliminated the inflated total.
       LEFT JOIN can_status cs ON cs.user_id = u.id
-      LEFT JOIN orders o ON o.user_id = u.id 
-        AND o.created_at >= $2 
-        AND o.created_at <= $3
-        -- ✅ Exclude scheduled (future, not-yet-delivered) orders so the
-        --    cycle total matches the user app (which also skips scheduled).
-        AND (o.status IS NULL OR o.status <> 'scheduled')
       WHERE u.apartment_id = $1
-      GROUP BY u.id, u.phone, u.full_name, u.apartment_id,
-               cs.can_1_full, cs.can_2_full, 
-               cs.can_3_full, cs.updated_at, cs.additional_cans
       ORDER BY u.full_name ASC
     `;
     

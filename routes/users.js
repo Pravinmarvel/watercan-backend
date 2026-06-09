@@ -726,4 +726,55 @@ router.put('/:userId/additional-cans', authenticateToken, async (req, res) => {
   }
 });
 
+// =====================================================
+// PUT /api/users/:userId/cod
+// ✅ User chooses Cash on Delivery for the current cycle.
+//    Stores a flag (valid until cycle_end) so the distributor sees a COD
+//    indicator and collects cash. Uses a small cod_flags table, created
+//    on first use so no separate migration is required.
+// =====================================================
+router.put('/:userId/cod', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (req.user.userId !== parseInt(userId)) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const { cod, cycle_end, amount, cans } = req.body;
+
+    // Create the table if it doesn't exist yet (one-time, idempotent).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cod_flags (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        cycle_end TIMESTAMP,
+        amount NUMERIC DEFAULT 0,
+        cans INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    if (cod === false) {
+      // Turn COD off for this user (clear any active flags).
+      await pool.query('DELETE FROM cod_flags WHERE user_id = $1', [userId]);
+      return res.json({ success: true, message: 'COD cleared' });
+    }
+
+    // Replace any existing flag with the new one for this cycle.
+    await pool.query('DELETE FROM cod_flags WHERE user_id = $1', [userId]);
+    await pool.query(
+      `INSERT INTO cod_flags (user_id, cycle_end, amount, cans, created_at)
+       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)`,
+      [userId, cycle_end || null, amount || 0, cans || 0]
+    );
+
+    console.log(`✅ COD set for user ${userId} (₹${amount || 0}, ${cans || 0} cans)`);
+    res.json({ success: true, message: 'Cash on Delivery recorded' });
+  } catch (error) {
+    console.error('❌ Set COD error:', error);
+    res.status(500).json({ error: 'Failed to set Cash on Delivery' });
+  }
+});
+
 module.exports = router;
