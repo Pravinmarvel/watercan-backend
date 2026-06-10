@@ -321,7 +321,7 @@ function authenticateToken(req, res, next) {
 // GET /api/users/profile
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const query = 'SELECT id, phone, email, full_name, apartment_id, created_at FROM users WHERE id = $1';
+    const query = 'SELECT id, phone, email, full_name, apartment_id, created_at, cycle_start FROM users WHERE id = $1';
     const result = await pool.query(query, [req.user.userId]);
 
     if (result.rows.length === 0) {
@@ -335,7 +335,8 @@ router.get('/profile', authenticateToken, async (req, res) => {
         email: result.rows[0].email,
         fullName: result.rows[0].full_name,
         apartmentId: result.rows[0].apartment_id,
-        createdAt: result.rows[0].created_at
+        createdAt: result.rows[0].created_at,
+        cycleStart: result.rows[0].cycle_start
       }
     });
 
@@ -609,7 +610,8 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
         ag.distributor_id,
         ag.distributor_name,
         ag.distributor_upi_id,
-        d.is_working
+        d.is_working,
+        u.cycle_start
       FROM users u
       LEFT JOIN apartment_groups ag ON u.apartment_id = ag.id
       LEFT JOIN distributors d ON ag.distributor_id = d.id
@@ -633,12 +635,46 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
         distributor_id: apartmentData.distributor_id,
         distributor_name: apartmentData.distributor_name,
         distributor_upi_id: apartmentData.distributor_upi_id,
-        isWorking: apartmentData.is_working !== null ? apartmentData.is_working : true
+        isWorking: apartmentData.is_working !== null ? apartmentData.is_working : true,
+        cycle_start: apartmentData.cycle_start
       }
     });
   } catch (error) {
     console.error('❌ Get user apartment error:', error);
     res.status(500).json({ error: 'Failed to get apartment details' });
+  }
+});
+
+// ✅ PUT /api/users/:userId/cycle-start
+// Advance (or set) this user's billing cycle start. Called by the app right
+// after a payment succeeds, with cycleStart = payDay + 1 (the new cycle begins
+// the day after payment). The distributor's "amount owed" then counts cans from
+// this date forward. Body: { cycleStart: 'YYYY-MM-DD' }.
+router.put('/:userId/cycle-start', authenticateToken, async (req, res) => {
+  const { userId } = req.params;
+
+  if (req.user.userId !== parseInt(userId)) {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+
+  const { cycleStart } = req.body;
+  if (!cycleStart || !/^\d{4}-\d{2}-\d{2}$/.test(String(cycleStart))) {
+    return res.status(400).json({ error: 'cycleStart must be a YYYY-MM-DD date' });
+  }
+
+  try {
+    const result = await pool.query(
+      'UPDATE users SET cycle_start = $1 WHERE id = $2 RETURNING cycle_start',
+      [cycleStart, userId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    console.log(`✅ User ${userId} cycle_start set to ${cycleStart}`);
+    res.json({ success: true, cycle_start: result.rows[0].cycle_start });
+  } catch (error) {
+    console.error('❌ Set cycle-start error:', error);
+    res.status(500).json({ error: 'Failed to set cycle start' });
   }
 });
 

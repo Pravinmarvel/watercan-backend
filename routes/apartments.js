@@ -77,8 +77,13 @@ router.get('/:apartmentId/residents', async (req, res) => {
             SELECT MAX(od.quantity) AS daily_qty
             FROM orders od
             WHERE od.user_id = u.id
-              AND od.created_at >= $2
-              AND od.created_at <= $3
+              -- ✅ PER-USER CYCLE: count cans from THIS user's own cycle_start
+              -- (set to payDay+1 each time they pay) through now. Falls back to
+              -- the global anchor cycle start ($2) for legacy users with no
+              -- cycle_start yet. Upper bound is NOW() = "consumed so far", which
+              -- is what an early payment settles.
+              AND od.created_at >= COALESCE(u.cycle_start::timestamp, $2)
+              AND od.created_at <= NOW()
               AND (od.status IS NULL OR od.status <> 'scheduled')
               AND NOT EXISTS (
                 SELECT 1 FROM payments p WHERE p.order_id = od.id
@@ -86,6 +91,7 @@ router.get('/:apartmentId/residents', async (req, res) => {
             GROUP BY (od.created_at AT TIME ZONE 'UTC')::date
           ) per_day
         ), 0) as total_cans_cycle,
+        u.cycle_start,
         (SELECT COUNT(*) FROM subscriptions s WHERE s.user_id = u.id) as total_subscriptions,
         (SELECT COUNT(*) FROM can_returns cr WHERE cr.user_id = u.id AND cr.status = 'collected') as total_collected_returns,
         (SELECT COUNT(*) FROM orders o2 WHERE o2.user_id = u.id AND o2.status = 'scheduled' AND o2.scheduled_for IS NOT NULL AND o2.scheduled_for >= NOW()) as scheduled_orders_count,
@@ -105,8 +111,7 @@ router.get('/:apartmentId/residents', async (req, res) => {
     
     const result = await pool.query(query, [
       apartmentId,
-      cycleStart.toISOString(),
-      cycleEnd.toISOString()
+      cycleStart.toISOString()
     ]);
     
     console.log(`✅ Found ${result.rows.length} residents`);
@@ -184,6 +189,7 @@ router.get('/:apartmentId/residents', async (req, res) => {
         },
         additionalCans: parseInt(row.additional_cans) || 0,
         totalCansThisCycle: parseInt(row.total_cans_cycle),
+        cycleStart: row.cycle_start, // ✅ this user's own cycle start (or null = legacy)
         scheduledOrders: parseInt(row.scheduled_orders_count) || 0,
         scheduledOrderList: row.scheduled_order_list || [],
         customerStatus: parseInt(row.total_subscriptions) === 0
