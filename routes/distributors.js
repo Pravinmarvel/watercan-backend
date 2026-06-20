@@ -50,6 +50,29 @@ function authenticateToken(req, res, next) {
   });
 }
 
+// ── Approval gate ──────────────────────────────────
+// Blocks data access for distributor accounts that haven't been approved yet.
+// Login and /profile stay open so an unapproved distributor can sign in and be
+// shown a "pending approval" screen — they just can't pull any apartment data.
+async function requireApproved(req, res, next) {
+  try {
+    const distributorId = req.distributor?.distributorId;
+    if (!distributorId) return res.status(401).json({ error: 'Invalid authentication' });
+    const r = await pool.query('SELECT is_approved FROM distributors WHERE id = $1', [distributorId]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Distributor not found' });
+    if (r.rows[0].is_approved !== true) {
+      return res.status(403).json({
+        error: 'Your distributor account is pending approval.',
+        code: 'PENDING_APPROVAL',
+      });
+    }
+    next();
+  } catch (e) {
+    console.error('❌ requireApproved error:', e);
+    return res.status(500).json({ error: 'Approval check failed' });
+  }
+}
+
 // ── TOKEN REFRESH ──────────────────────────────────
 router.post('/refresh-token', async (req, res) => {
   try {
@@ -262,22 +285,26 @@ router.get('/upi/:distributorId', async (req, res) => {
 });
 
 // ── APARTMENT CREATION ─────────────────────────────
-router.post('/apartments', authenticateToken, async (req, res) => {
+router.post('/apartments', authenticateToken, requireApproved, async (req, res) => {
   try {
     if (!req.distributor?.distributorId) return res.status(401).json({ error: 'Invalid authentication. Please log in again.' });
     const distributorId = req.distributor.distributorId;
-    const { name, location, price_per_can, join_code } = req.body;
+    const { name, location, price_per_can, join_code, can_litres } = req.body;
     if (!name || !location || !price_per_can || !join_code)
       return res.status(400).json({ error: 'Name, location, price per can, and join code are required' });
-    if (!/^\d{4}$/.test(join_code)) return res.status(400).json({ error: 'Join code must be exactly 4 digits' });
+    // ✅ Accept 4–6 digit join codes (legacy 4-digit + new 6-digit).
+    if (!/^\d{4,6}$/.test(join_code)) return res.status(400).json({ error: 'Join code must be 4 to 6 digits' });
+    // ✅ Can size in litres (distributor-configurable). Defaults to 25.
+    const litres = (can_litres != null && !isNaN(parseInt(can_litres)) && parseInt(can_litres) > 0)
+      ? parseInt(can_litres) : 25;
     const codeCheck = await pool.query('SELECT id FROM apartment_groups WHERE join_code = $1', [join_code]);
     if (codeCheck.rows.length > 0) return res.status(400).json({ error: 'This join code is already in use. Please use a different code.' });
     const dq = await pool.query('SELECT full_name, upi_id FROM distributors WHERE id = $1', [distributorId]);
     if (!dq.rows.length) return res.status(404).json({ error: 'Distributor not found' });
     const { full_name, upi_id } = dq.rows[0];
     const result = await pool.query(
-      'INSERT INTO apartment_groups (name, location, price_per_can, join_code, distributor_id, distributor_name, distributor_upi_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
-      [name.trim(), location.trim(), price_per_can, join_code, distributorId, full_name, upi_id]
+      'INSERT INTO apartment_groups (name, location, price_per_can, join_code, distributor_id, distributor_name, distributor_upi_id, can_litres) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
+      [name.trim(), location.trim(), price_per_can, join_code, distributorId, full_name, upi_id, litres]
     );
     console.log(`✅ Apartment created by distributor ${distributorId}`);
     res.status(201).json({ message: 'Apartment created successfully', apartment: result.rows[0] });
@@ -466,7 +493,7 @@ router.get('/:distributorId/my-rating', async (req, res) => {
 // ════════════════════════════════════════════════════
 // ✅ NEW: DISTRIBUTOR CONFIRMS PAYMENT RECEIVED
 // ════════════════════════════════════════════════════
-router.post('/confirm-payment', authenticateToken, async (req, res) => {
+router.post('/confirm-payment', authenticateToken, requireApproved, async (req, res) => {
   try {
     const distributorId = req.distributor.distributorId;
     const { userId, amount } = req.body;
@@ -546,6 +573,38 @@ router.get('/stats', authenticateToken, async (req, res) => {
     }
     res.json({ weeklyStats });
   } catch (e) { console.error('❌ Stats error:', e); res.status(500).json({ error: 'Failed to get stats' }); }
+});
+
+// ── DELETE ACCOUNT (Play Store requirement) ─────────
+// Permanently deletes the distributor account and detaches their apartments.
+// Residents in those apartments are freed (apartment_id set NULL) rather than
+// deleted, since they are separate user accounts.
+router.delete('/account', authenticateToken, async (req, res) => {
+  const distributorId = req.distributor?.distributorId;
+  if (!distributorId) return res.status(401).json({ error: 'Invalid authentication' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Free residents who belong to this distributor's apartments.
+    await client.query(
+      `UPDATE users SET apartment_id = NULL
+       WHERE apartment_id IN (SELECT id FROM apartment_groups WHERE distributor_id = $1)`,
+      [distributorId]
+    );
+    await client.query('DELETE FROM distributor_ratings WHERE distributor_id = $1', [distributorId]);
+    await client.query('DELETE FROM apartment_groups WHERE distributor_id = $1', [distributorId]);
+    await client.query('DELETE FROM distributors WHERE id = $1', [distributorId]);
+    await client.query('COMMIT');
+    console.log(`🗑️ Distributor ${distributorId} account deleted`);
+    res.json({ success: true, message: 'Account deleted' });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('❌ Delete distributor account error:', e);
+    res.status(500).json({ error: 'Failed to delete account' });
+  } finally {
+    client.release();
+  }
 });
 
 module.exports = router;

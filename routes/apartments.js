@@ -5,11 +5,64 @@
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
+const jwt = require('jsonwebtoken');
+
+// ── Distributor auth + approval gate ─────────────────────────────────
+// Verifies the distributor JWT (same secret as the distributors routes) AND
+// requires the account to be approved. Used to protect endpoints that expose
+// resident PII (names, phones, addresses) so they can never be read anonymously.
+async function authDistributor(req, res, next) {
+  try {
+    const token = (req.headers.authorization || '').split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'Access token required' });
+
+    let payload;
+    try {
+      payload = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (e) {
+      if (e.name === 'TokenExpiredError') {
+        return res.status(401).json({ error: 'Token expired. Please log in again.', code: 'TOKEN_EXPIRED' });
+      }
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+
+    const distributorId = payload.distributorId;
+    if (!distributorId) return res.status(403).json({ error: 'Invalid token' });
+
+    const r = await pool.query('SELECT is_approved FROM distributors WHERE id = $1', [distributorId]);
+    if (!r.rows.length) return res.status(403).json({ error: 'Distributor not found' });
+    if (r.rows[0].is_approved !== true) {
+      return res.status(403).json({
+        error: 'Your distributor account is pending approval.',
+        code: 'PENDING_APPROVAL',
+      });
+    }
+
+    req.distributor = { distributorId };
+    next();
+  } catch (e) {
+    console.error('❌ authDistributor error:', e);
+    return res.status(500).json({ error: 'Authentication check failed' });
+  }
+}
+
+// Confirms the authenticated distributor actually OWNS the given apartment,
+// so distributor A can never read distributor B's residents by changing the id.
+async function assertOwnsApartment(distributorId, apartmentId) {
+  const r = await pool.query('SELECT distributor_id FROM apartment_groups WHERE id = $1', [apartmentId]);
+  if (!r.rows.length) return { ok: false, code: 404, msg: 'Apartment not found' };
+  if (parseInt(r.rows[0].distributor_id) !== parseInt(distributorId)) {
+    return { ok: false, code: 403, msg: 'You do not manage this apartment' };
+  }
+  return { ok: true };
+}
 
 // GET /api/apartments/:apartmentId/residents
 // Returns all residents with their order totals for current cycle
-router.get('/:apartmentId/residents', async (req, res) => {
+router.get('/:apartmentId/residents', authDistributor, async (req, res) => {
   try {
+    const own = await assertOwnsApartment(req.distributor.distributorId, req.params.apartmentId);
+    if (!own.ok) return res.status(own.code).json({ error: own.msg });
     const { apartmentId } = req.params;
     
     console.log(`📤 Getting residents for apartment ${apartmentId}`);
@@ -229,8 +282,10 @@ router.get('/:apartmentId/residents', async (req, res) => {
 
 // GET /api/apartments/:apartmentId/orders
 // Get all orders for an apartment (for debugging)
-router.get('/:apartmentId/orders', async (req, res) => {
+router.get('/:apartmentId/orders', authDistributor, async (req, res) => {
   try {
+    const own = await assertOwnsApartment(req.distributor.distributorId, req.params.apartmentId);
+    if (!own.ok) return res.status(own.code).json({ error: own.msg });
     const { apartmentId } = req.params;
     const { startDate, endDate } = req.query;
     
@@ -283,9 +338,13 @@ router.get('/:apartmentId/orders', async (req, res) => {
 
 // GET /api/distributors/:distributorId/apartments
 // Get all apartments for a distributor
-router.get('/distributor/:distributorId', async (req, res) => {
+router.get('/distributor/:distributorId', authDistributor, async (req, res) => {
   try {
     const { distributorId } = req.params;
+    // A distributor may only list their OWN apartments.
+    if (parseInt(distributorId) !== parseInt(req.distributor.distributorId)) {
+      return res.status(403).json({ success: false, error: 'Unauthorized' });
+    }
     
     const query = `
       SELECT 
@@ -297,6 +356,7 @@ router.get('/distributor/:distributorId', async (req, res) => {
         distributor_id,
         distributor_name,
         distributor_upi_id,
+        can_litres,
         created_at
       FROM apartment_groups
       WHERE distributor_id = $1

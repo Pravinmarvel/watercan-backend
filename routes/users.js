@@ -508,6 +508,7 @@ router.get('/apartments', async (req, res) => {
         distributor_id,
         distributor_name,
         distributor_upi_id,
+        can_litres,
         created_at
       FROM apartment_groups
       ORDER BY name ASC
@@ -540,6 +541,7 @@ router.get('/apartments/search', async (req, res) => {
         distributor_id,
         distributor_name,
         distributor_upi_id,
+        can_litres,
         created_at
       FROM apartment_groups
       WHERE 
@@ -611,7 +613,8 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
         ag.distributor_name,
         ag.distributor_upi_id,
         d.is_working,
-        u.cycle_start
+        u.cycle_start,
+        ag.can_litres
       FROM users u
       LEFT JOIN apartment_groups ag ON u.apartment_id = ag.id
       LEFT JOIN distributors d ON ag.distributor_id = d.id
@@ -636,7 +639,8 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
         distributor_name: apartmentData.distributor_name,
         distributor_upi_id: apartmentData.distributor_upi_id,
         isWorking: apartmentData.is_working !== null ? apartmentData.is_working : true,
-        cycle_start: apartmentData.cycle_start
+        cycle_start: apartmentData.cycle_start,
+        can_litres: apartmentData.can_litres
       }
     });
   } catch (error) {
@@ -810,6 +814,37 @@ router.put('/:userId/cod', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('❌ Set COD error:', error);
     res.status(500).json({ error: 'Failed to set Cash on Delivery' });
+  }
+});
+
+// ── DELETE ACCOUNT (Play Store requirement) ─────────
+// Permanently deletes the user and all of their personal data.
+router.delete('/account', authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // Children first (payments reference orders).
+    await client.query(
+      'DELETE FROM payments WHERE order_id IN (SELECT id FROM orders WHERE user_id = $1)',
+      [userId]
+    );
+    await client.query('DELETE FROM orders WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM addresses WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM subscriptions WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM can_status WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM can_returns WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM distributor_ratings WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM users WHERE id = $1', [userId]);
+    await client.query('COMMIT');
+    console.log(`🗑️ User ${userId} account deleted`);
+    res.json({ success: true, message: 'Account deleted' });
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('❌ Delete user account error:', e);
+    res.status(500).json({ error: 'Failed to delete account' });
+  } finally {
+    client.release();
   }
 });
 
