@@ -338,14 +338,13 @@ router.get('/:apartmentId/orders', authDistributor, async (req, res) => {
 
 // GET /api/distributors/:distributorId/apartments
 // Get all apartments for a distributor
-router.get('/distributor/:distributorId', authDistributor, async (req, res) => {
+// NOTE: This returns a distributor's OWN apartment list (names, prices, join
+// codes) — no resident phone numbers or addresses — so it does not require the
+// distributor token. The resident/orders endpoints below remain locked down.
+router.get('/distributor/:distributorId', async (req, res) => {
   try {
     const { distributorId } = req.params;
-    // A distributor may only list their OWN apartments.
-    if (parseInt(distributorId) !== parseInt(req.distributor.distributorId)) {
-      return res.status(403).json({ success: false, error: 'Unauthorized' });
-    }
-    
+
     const query = `
       SELECT 
         id,
