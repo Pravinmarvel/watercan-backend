@@ -612,6 +612,8 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
         ag.distributor_id,
         ag.distributor_name,
         ag.distributor_upi_id,
+        d.upi_id   AS live_distributor_upi_id,
+        d.full_name AS live_distributor_name,
         d.is_working,
         u.cycle_start,
         ag.can_litres
@@ -636,8 +638,8 @@ router.get('/:userId/apartment', authenticateToken, async (req, res) => {
         price_per_can: apartmentData.price_per_can,
         join_code: apartmentData.join_code,
         distributor_id: apartmentData.distributor_id,
-        distributor_name: apartmentData.distributor_name,
-        distributor_upi_id: apartmentData.distributor_upi_id,
+        distributor_name: apartmentData.live_distributor_name || apartmentData.distributor_name,
+        distributor_upi_id: apartmentData.live_distributor_upi_id || apartmentData.distributor_upi_id,
         isWorking: apartmentData.is_working !== null ? apartmentData.is_working : true,
         cycle_start: apartmentData.cycle_start,
         can_litres: apartmentData.can_litres
